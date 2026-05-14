@@ -127,13 +127,10 @@ const register = async (req, res, next) => {
 
     const result = await pool.query(query, values);
 
-    const seller = result.rows[0];
-    const token = generateToken(seller);
-
     res.status(201).json({ 
       message: 'Seller registration submitted successfully. Your account is currently pending approval.', 
-      seller, 
-      token 
+      seller: result.rows[0],
+      requiresApproval: true
     });
   } catch (error) {
     next(error);
@@ -148,6 +145,12 @@ const login = async (req, res, next) => {
 
     if (!seller || !(await bcrypt.compare(password, seller.password))) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (seller.status !== 'approved') {
+      return res.status(403).json({
+        error: `Your seller account is ${seller.status || 'pending'}. Admin approval is required before login.`
+      });
     }
 
     const token = generateToken(seller);

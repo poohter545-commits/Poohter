@@ -6,6 +6,7 @@ const router = express.Router();
 const sellerController = require('../controllers/sellerController');
 const wholesaleController = require('../controllers/wholesaleController');
 const authMiddleware = require('../middleware/authMiddleware');
+const pool = require('../config/db');
 
 // Multer Storage Configuration for Products
 const storage = multer.diskStorage({
@@ -85,6 +86,25 @@ const isSeller = (req, res, next) => {
   return res.status(403).json({ error: 'Forbidden: Seller access required' });
 };
 
+const ensureApprovedSeller = async (req, res, next) => {
+  try {
+    const result = await pool.query('SELECT status FROM sellers WHERE id = $1', [req.user.id]);
+    const seller = result.rows[0];
+
+    if (!seller) {
+      return res.status(404).json({ error: 'Seller profile not found' });
+    }
+
+    if (seller.status !== 'approved') {
+      return res.status(403).json({ error: 'Admin approval is required before using seller operations' });
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Public Seller Auth
 router.post(
   '/register', 
@@ -97,15 +117,15 @@ router.post(
 router.post('/login', sellerController.login);       // Publicly accessible login
 
 // Protected Seller Routes
-router.get('/profile', authMiddleware, isSeller, sellerController.getProfile);
-router.post('/products', authMiddleware, isSeller, uploadProductMedia, sellerController.createProduct);
-router.get('/products', authMiddleware, isSeller, sellerController.getMyProducts);
-router.patch('/products/:id/stock', authMiddleware, isSeller, sellerController.updateStock);
-router.get('/orders', authMiddleware, isSeller, sellerController.getSellerOrders);
-router.patch('/orders/:id/status', authMiddleware, isSeller, sellerController.updateSellerOrderStatus);
-router.get('/payouts', authMiddleware, isSeller, sellerController.getSellerPayouts);
-router.get('/wholesale/products', authMiddleware, isSeller, wholesaleController.getWholesaleCatalogForSeller);
-router.get('/wholesale/orders', authMiddleware, isSeller, wholesaleController.getSellerWholesaleOrders);
-router.post('/wholesale/orders', authMiddleware, isSeller, wholesaleController.createWholesaleOrderForSeller);
+router.get('/profile', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getProfile);
+router.post('/products', authMiddleware, isSeller, ensureApprovedSeller, uploadProductMedia, sellerController.createProduct);
+router.get('/products', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getMyProducts);
+router.patch('/products/:id/stock', authMiddleware, isSeller, ensureApprovedSeller, sellerController.updateStock);
+router.get('/orders', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getSellerOrders);
+router.patch('/orders/:id/status', authMiddleware, isSeller, ensureApprovedSeller, sellerController.updateSellerOrderStatus);
+router.get('/payouts', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getSellerPayouts);
+router.get('/wholesale/products', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.getWholesaleCatalogForSeller);
+router.get('/wholesale/orders', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.getSellerWholesaleOrders);
+router.post('/wholesale/orders', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.createWholesaleOrderForSeller);
 
 module.exports = router;
