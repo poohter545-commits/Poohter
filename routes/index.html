@@ -269,8 +269,8 @@
                         window.location.protocol === 'file:';
 
         const BASE_URL = isLocal 
-            ? 'http://localhost:3000/api' 
-            : 'https://your-backend-api.onrender.com/api'; // Replace this with your URL once deployed
+            ? 'https://api.poohter.com/api' 
+            : 'https://api.poohter.com/api';
 
         const messageArea = document.getElementById('message-area');
         const productListDiv = document.getElementById('product-list');
@@ -348,7 +348,7 @@
             try {
                 const response = await fetch(url, { ...options, headers }).catch(err => {
                     if (err.name === 'TypeError') {
-                        throw new Error(`Cannot connect to backend at ${BASE_URL}. Is your server running?`);
+                        throw new Error(`Cannot connect to backend at ${BASE_URL}. Is the live API reachable?`);
                     }
                     throw err;
                 });
