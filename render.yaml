@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: poohter-api
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: TOPTEAM_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com

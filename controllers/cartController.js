@@ -16,6 +16,23 @@ const addToCart = async (req, res, next) => {
     }
 
     if (quantity > 0) { // Adding or incrementing
+      // Check current stock and what's already in cart
+      const stockResult = await pool.query(
+        `SELECT 
+          COALESCE((SELECT SUM(stock_quantity) FROM inventory WHERE product_id = $1), 0) as stock,
+          COALESCE((SELECT quantity FROM cart_items WHERE user_id = $2 AND product_id = $1), 0) as in_cart`,
+        [product_id, userId]
+      );
+
+      const availableStock = Number(stockResult.rows[0].stock);
+      const currentInCart = Number(stockResult.rows[0].in_cart);
+
+      if (currentInCart + quantity > availableStock) {
+        return res.status(400).json({ 
+          error: `Insufficient stock. Only ${availableStock} available, and you already have ${currentInCart} in your cart.` 
+        });
+      }
+
       // 2. Upsert logic: If product exists in cart for this user, increase quantity, else insert new row
       const upsertQuery = `
         INSERT INTO cart_items (user_id, product_id, quantity)

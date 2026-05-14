@@ -7,6 +7,7 @@ const normalizeProduct = (product) => ({
 });
 
 const createProduct = async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const { name, price, description } = req.body;
 
@@ -19,21 +20,38 @@ const createProduct = async (req, res, next) => {
       return res.status(400).json({ error: 'Price must be a non-negative integer' });
     }
 
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    const result = await client.query(
       'INSERT INTO products (name, price, description) VALUES ($1, $2, $3) RETURNING id, name, price, description, created_at',
       [name.toString().trim(), parsedPrice, description || null]
     );
 
-    return res.status(201).json({ product: normalizeProduct(result.rows[0]) });
+    const newProduct = result.rows[0];
+
+    // Initialize inventory with 0 stock for a default warehouse (ID 1)
+    await client.query(
+      'INSERT INTO inventory (product_id, warehouse_id, stock_quantity) VALUES ($1, $2, $3)',
+      [newProduct.id, 1, 0]
+    );
+
+    await client.query('COMMIT');
+    return res.status(201).json({ product: normalizeProduct(newProduct) });
   } catch (error) {
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 };
 
 const getProducts = async (req, res, next) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, price, description, created_at FROM products ORDER BY created_at DESC'
+      `SELECT id, name, price, description, created_at
+       FROM products
+       WHERE status = 'live'
+       ORDER BY created_at DESC`
     );
 
     return res.status(200).json({

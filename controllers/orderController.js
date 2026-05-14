@@ -1,4 +1,19 @@
 const pool = require('../config/db');
+const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
+
+const getBuyerSnapshot = async (client, buyerId) => {
+  const result = await client.query(
+    'SELECT name, email, phone, address FROM users WHERE id = $1',
+    [buyerId]
+  );
+  return result.rows[0] || {};
+};
+
+const updateOrderStatusColumns = (status) => (
+  status === 'out_for_delivery'
+    ? 'status = $1, out_for_delivery_at = NOW()'
+    : 'status = $1'
+);
 
 const createOrder = async (req, res, next) => {
   const client = await pool.connect();
@@ -24,10 +39,17 @@ const createOrder = async (req, res, next) => {
     );
     const productMap = new Map(productData.rows.map(p => [p.id, p]));
 
+    const orderCode = await createUniqueOrderCode(client);
+    const buyer = await getBuyerSnapshot(client, buyerId);
+
     // 2. Create the order record first
     const orderResult = await client.query(
-      'INSERT INTO orders (user_id, total_price) VALUES ($1, $2) RETURNING id, created_at',
-      [buyerId, 0]
+      `INSERT INTO orders (
+        user_id, total_price, status, order_code, source,
+        customer_name, customer_email, customer_phone, customer_address
+       ) VALUES ($1, $2, 'pending', $3, 'poohter', $4, $5, $6, $7)
+       RETURNING id, order_code, created_at`,
+      [buyerId, 0, orderCode, buyer.name || null, buyer.email || null, buyer.phone || null, buyer.address || null]
     );
     const orderId = orderResult.rows[0].id;
 
@@ -87,6 +109,7 @@ const createOrder = async (req, res, next) => {
       message: 'Order created successfully',
       order: {
         id: orderId,
+        order_code: orderResult.rows[0].order_code,
         total_price: totalOrderPrice,
         created_at: orderResult.rows[0].created_at,
         items: processedItems
@@ -114,6 +137,11 @@ const getOrders = async (req, res, next) => {
     const result = await pool.query(
       `SELECT 
          o.id, 
+         o.order_code,
+         o.status,
+         o.source,
+         o.platform,
+         o.external_order_ref,
          o.total_price, 
          o.created_at,
          COALESCE(json_agg(json_build_object(
@@ -133,6 +161,11 @@ const getOrders = async (req, res, next) => {
 
     const orders = result.rows.map(order => ({
       id: order.id,
+      order_code: order.order_code,
+      status: order.status,
+      source: order.source,
+      platform: order.platform,
+      external_order_ref: order.external_order_ref,
       total_price: Number(order.total_price),
       created_at: order.created_at,
       items: (order.items || []).map(item => ({ // Ensure items is an array, even if empty
@@ -173,16 +206,41 @@ const checkout = async (req, res, next) => {
       return res.status(400).json({ error: 'Cart is empty' });
     }
 
+    // 3. Verify and Lock Inventory for these products (FOR UPDATE prevents race conditions)
+    const productIds = cartItems.map(item => item.product_id);
+    const inventoryResult = await client.query(
+      'SELECT product_id, stock_quantity AS total_stock FROM inventory WHERE product_id = ANY($1) AND warehouse_id = 1 FOR UPDATE',
+      [productIds]
+    );
+
+    const stockMap = new Map(inventoryResult.rows.map(row => [row.product_id, Number(row.total_stock)]));
+
+    for (const item of cartItems) {
+      const available = stockMap.get(item.product_id) || 0;
+      if (available < item.quantity) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: `Stock for product ${item.product_id} changed. Only ${available} units left.` 
+        });
+      }
+    }
+
     // 4. Calculate total price from DB prices (never trust frontend prices)
     let total_price = 0;
     cartItems.forEach(item => {
       total_price += Number(item.price) * item.quantity;
     });
 
-    // 5. Create a new order
+    // 5. Create a new order with a public code for scanning or manual lookup.
+    const orderCode = await createUniqueOrderCode(client);
+    const buyer = await getBuyerSnapshot(client, userId);
     const orderResult = await client.query(
-      'INSERT INTO orders (user_id, total_price) VALUES ($1, $2) RETURNING id',
-      [userId, total_price]
+      `INSERT INTO orders (
+        user_id, total_price, order_code, source, status,
+        customer_name, customer_email, customer_phone, customer_address
+       ) VALUES ($1, $2, $3, 'poohter', 'pending', $4, $5, $6, $7)
+       RETURNING id, order_code`,
+      [userId, total_price, orderCode, buyer.name || null, buyer.email || null, buyer.phone || null, buyer.address || null]
     );
     const order_id = orderResult.rows[0].id;
 
@@ -201,6 +259,22 @@ const checkout = async (req, res, next) => {
     `;
     await client.query(bulkInsertQuery, bulkValues);
 
+    // 8. Deduct stock from inventory
+    // Note: In a multi-warehouse setup, you'd have logic to pick which warehouse to deduct from.
+    // Here we deduct from the primary warehouse (ID 1) as per standard simple implementation.
+    for (const item of cartItems) {
+      await client.query(
+        'UPDATE inventory SET stock_quantity = stock_quantity - $1 WHERE product_id = $2 AND warehouse_id = 1',
+        [item.quantity, item.product_id]
+      );
+    }
+
+    // 8.5 Log initial status to delivery history
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [order_id, 'pending']
+    );
+
     // 9. Clear cart_items for that user after successful order creation
     await client.query('DELETE FROM cart_items WHERE user_id = $1', [userId]);
 
@@ -210,7 +284,108 @@ const checkout = async (req, res, next) => {
     return res.status(201).json({
       message: 'Order placed successfully',
       order_id,
-      total_price
+      total_price,
+      order_code: orderResult.rows[0].order_code
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const updateOrderStatus = async (req, res, next) => {
+  const { id } = req.params;
+  const { status: newStatus } = req.body;
+  const userRole = req.user.role;
+
+  // Authorization Check
+  const authorizedRoles = ['admin', 'warehouse', 'delivery'];
+  if (!authorizedRoles.includes(userRole)) {
+    return res.status(403).json({ error: 'Unauthorized: Only admin, warehouse, or delivery roles can update status' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Fetch current status and lock row
+    const orderRes = await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [id]);
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const currentStatus = orderRes.rows[0].status;
+    const transition = validateStatusTransition(currentStatus, newStatus);
+
+    if (!transition.valid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: transition.message });
+    }
+
+    // Update Order
+    const result = await client.query(
+      `UPDATE orders SET ${updateOrderStatusColumns(newStatus)} WHERE id = $2 RETURNING *`,
+      [newStatus, id]
+    );
+
+    // Log History
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [id, newStatus]
+    );
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Status updated', order: result.rows[0] });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const deliveryUpdate = async (req, res, next) => {
+  const { order_code, tracking_id, status: newStatus } = req.body;
+  const userRole = req.user.role;
+
+  if (!['admin', 'warehouse', 'delivery'].includes(userRole)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const lookupCode = order_code || tracking_id;
+    const orderRes = await client.query('SELECT id, order_code, status FROM orders WHERE order_code = $1 FOR UPDATE', [lookupCode]);
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order code not found' });
+    }
+
+    const order = orderRes.rows[0];
+    const transition = validateStatusTransition(order.status, newStatus);
+
+    if (!transition.valid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: transition.message });
+    }
+
+    await client.query(`UPDATE orders SET ${updateOrderStatusColumns(newStatus)} WHERE id = $2`, [newStatus, order.id]);
+
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [order.id, newStatus]
+    );
+
+    await client.query('COMMIT');
+    res.status(200).json({
+      message: 'Delivery status synchronized successfully',
+      order_code: order.order_code,
+      status: newStatus
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -224,4 +399,6 @@ module.exports = {
   createOrder,
   getOrders,
   checkout,
+  updateOrderStatus,
+  deliveryUpdate
 };

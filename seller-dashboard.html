@@ -1,0 +1,1290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poohter | Seller Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --primary-gradient: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+            --primary: #2563eb;
+            --primary-soft: #eff6ff;
+            --sidebar-bg: #1e293b;
+            --sidebar-text: #94a3b8;
+            --sidebar-active: #ffffff;
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --danger: #dc2626;
+            --success: #16a34a;
+            --warning: #ea580c;
+            --border: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --radius: 0.75rem;
+            --sidebar-w: 280px;
+            --header-h: 70px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-body); color: var(--text-main); line-height: 1.5; overflow-x: hidden; }
+        button { cursor: pointer; border: none; font-family: inherit; transition: all 0.2s; border-radius: 0.5rem; }
+        button:disabled { opacity: 0.5; cursor: not-allowed !important; }
+        .hidden { display: none !important; }
+
+        /* Layout */
+        .wrapper { display: flex; min-height: 100vh; }
+        aside { 
+            width: var(--sidebar-w); 
+            background: var(--sidebar-bg); 
+            position: fixed; 
+            height: 100vh; 
+            display: flex; 
+            flex-direction: column; 
+            padding: 1.5rem; 
+            z-index: 100; 
+            transition: transform 0.3s ease;
+        }
+        main { flex: 1; margin-left: var(--sidebar-w); width: calc(100% - var(--sidebar-w)); display: flex; flex-direction: column; }
+        .content-body { padding: 2rem; flex: 1; }
+
+        /* Sidebar */
+        .brand { font-size: 1.5rem; font-weight: 800; color: white; letter-spacing: -1px; margin-bottom: 2.5rem; display: flex; align-items: center; gap: 12px; padding: 0 0.5rem; }
+        .brand i { color: var(--primary); }
+        .nav-list { list-style: none; flex-grow: 1; }
+        .nav-item { 
+            padding: 0.75rem 1rem; 
+            margin-bottom: 0.25rem; 
+            border-radius: 0.5rem; 
+            color: var(--sidebar-text); 
+            font-weight: 500; 
+            display: flex; 
+            align-items: center; 
+            gap: 12px; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+        }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: white; }
+        .nav-item.active { background: var(--primary); color: white; }
+        .logout-btn { color: #fca5a5; margin-top: auto; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1); }
+        .logout-btn:hover { color: #f87171; background: rgba(220, 38, 38, 0.1); }
+
+        /* Navbar */
+        .top-nav {
+            height: var(--header-h);
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 90;
+        }
+        .user-profile { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 0.95rem; }
+        .avatar { width: 35px; height: 35px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 800; }
+
+        /* Auth */
+        .auth-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f8fafc; padding: 20px; }
+        .auth-card { background: white; padding: 40px 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); width: 100%; max-width: 420px; border: 1px solid var(--border); transition: all 0.3s ease; }
+        .auth-card.wide { max-width: 850px; }
+
+        .brand-header { text-align: center; margin-bottom: 30px; }
+        .logo-row { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 1.8rem; font-weight: 900; letter-spacing: -1.5px; color: #1e293b; }
+        .logo-row i { color: #2563eb; }
+        .tagline { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; letter-spacing: 1.5px; text-transform: uppercase; margin-top: 4px; }
+
+        .auth-card h2 { font-size: 28px; font-weight: 700; color: #0f172a; margin-bottom: 25px; text-align: left; }
+
+        .form-group { margin-bottom: 20px; }
+        .label-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #0f172a; }
+        .label-row i { width: 16px; height: 16px; color: var(--text-muted); }
+        .label-row label { font-size: 0.9rem; font-weight: 600; }
+
+        .input-group { position: relative; }
+        .form-control { 
+            width: 100%; padding: 12px 16px; border: 1.5px solid #e5e7eb; border-radius: 10px; 
+            font-size: 0.95rem; outline: none; transition: all 0.2s; background: #fff;
+        }
+        .form-control:focus { border-color: #2563eb; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1); }
+        
+        .input-group .toggle-password { 
+            position: absolute; right: 14px; top: 50%; transform: translateY(-50%); 
+            cursor: pointer; color: var(--text-muted); width: 18px; 
+        }
+
+        .password-hint { display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; font-style: italic; }
+        
+        .btn-primary { 
+            background: linear-gradient(135deg, #2563eb, #1d4ed8); 
+            color: white; padding: 14px 20px; font-weight: 700; 
+            display: flex; align-items: center; gap: 10px; justify-content: center; 
+            border-radius: 10px; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2); 
+            transition: all 0.3s; 
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3); }
+        .btn-auth { width: 100%; margin-top: 1rem; }
+        .upload-drop-zone { border: 2px dashed var(--border); border-radius: 16px; padding: 1.5rem; text-align: center; cursor: pointer; transition: all 0.3s; background: #fafafa; }
+        .upload-drop-zone:hover { border-color: var(--primary); background: var(--primary-soft); }
+        .upload-drop-zone i { color: var(--text-muted); margin-bottom: 0.5rem; }
+
+        /* Stepper Styles */
+        .stepper { display: flex; justify-content: space-between; margin-bottom: 2.5rem; position: relative; }
+        .stepper::before { content: ""; position: absolute; top: 18px; left: 0; width: 100%; height: 2px; background: var(--border); z-index: 1; }
+        .step-pill { width: 40px; height: 40px; border-radius: 12px; background: white; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center; z-index: 2; font-weight: 700; color: var(--text-muted); transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); position: relative; }
+        .step-pill.active { border-color: var(--primary); background: var(--primary); color: white; transform: scale(1.1); box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.2); }
+        .step-pill.completed { border-color: var(--success); background: var(--success); color: white; }
+        .step-pill span { position: absolute; top: 40px; font-size: 0.7rem; white-space: nowrap; color: var(--text-muted); text-transform: uppercase; }
+        .step-pill.active span { color: var(--primary); font-weight: 800; }
+
+        .form-step { display: none; animation: fadeIn 0.4s ease; }
+        .form-step.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .step-footer { display: flex; justify-content: space-between; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
+        .error-msg { color: var(--danger); font-size: 0.75rem; margin-top: 4px; display: none; }
+        .invalid .form-control { border-color: var(--danger); }
+        .invalid .error-msg { display: block; }
+
+        /* Media Preview Styles */
+        .media-preview-container { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+        .media-preview-item { position: relative; width: 80px; height: 80px; border: 1px solid var(--border); border-radius: 8px; }
+        .media-preview-item img, .media-preview-item video { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
+        .remove-media-btn { position: absolute; top: -8px; right: -8px; background: var(--danger); color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 2px solid white; box-shadow: var(--shadow-sm); transition: transform 0.2s; }
+        .remove-media-btn:hover { transform: scale(1.1); }
+
+        /* Content Parts */
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+        h1 { font-size: 1.5rem; font-weight: 700; color: var(--text-main); }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; }
+        .stat-card { background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius); box-shadow: var(--shadow-sm); border: 1px solid var(--border); display: flex; align-items: center; gap: 1rem; }
+        .stat-icon { width: 48px; height: 48px; border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; }
+        .stat-info h3 { color: var(--text-muted); font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem; }
+        .stat-info p { font-size: 1.5rem; font-weight: 700; color: var(--text-main); }
+
+        /* Tables & Lists */
+        .data-card { background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm); border: 1px solid var(--border); overflow: hidden; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f9fafb; text-align: left; padding: 0.75rem 1.5rem; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+        td { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; vertical-align: middle; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover { background: #fbfbfb; }
+
+        /* Inventory Controls */
+        .stock-input { width: 80px; padding: 0.4rem; border: 1px solid var(--border); border-radius: 0.375rem; font-weight: 600; text-align: center; }
+        .btn-outline { background: white; border: 1px solid var(--border); color: var(--text-main); font-size: 0.8rem; padding: 0.4rem 0.8rem; }
+        .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
+        
+        /* Status Badges */
+        .badge { padding: 0.25rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; display: inline-flex; align-items: center; gap: 4px; }
+        .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .status-pending { background: #f1f5f9; color: #64748b; }
+        .status-accepted { background: #eff6ff; color: #2563eb; }
+        .status-packed { background: #fff7ed; color: #ea580c; }
+        .status-shipped { background: #faf5ff; color: #9333ea; }
+        .status-delivered { background: #f0fdf4; color: #16a34a; }
+
+        /* Modal */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: none; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+        .modal { background: white; width: 100%; max-width: 500px; border-radius: 1rem; box-shadow: var(--shadow); overflow: hidden; animation: zoomIn 0.2s ease; }
+        @keyframes zoomIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .modal-header { padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .modal-body { padding: 1.5rem; }
+        .modal-footer { padding: 1rem 1.5rem; background: #f9fafb; display: flex; justify-content: flex-end; gap: 12px; }
+
+        /* Skeleton Loader */
+        .skeleton { background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* Toast */
+        #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 1000; }
+        .toast { padding: 0.75rem 1.25rem; border-radius: 0.5rem; color: white; margin-top: 10px; box-shadow: var(--shadow); font-weight: 500; min-width: 280px; animation: slideUp 0.3s ease-out; display: flex; align-items: center; gap: 10px; }
+        .toast-success { background: var(--success); }
+        .toast-error { background: var(--danger); }
+        @keyframes slideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+        @media (max-width: 768px) {
+            aside { transform: translateX(-100%); }
+            main { margin-left: 0; width: 100%; }
+            .sidebar-open aside { transform: translateX(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="toast-container"></div>
+
+    <!-- Login View -->
+    <div id="view-login" class="auth-screen">
+        <div class="auth-card" id="auth-card">
+            <div class="brand-header">
+                <div class="logo-row">
+                    <i data-lucide="shopping-bag"></i>
+                    <span>POOHTER</span>
+                </div>
+                <p class="tagline">A Trust Where Quality Matters</p>
+            </div>
+            <h2 id="auth-title">Seller Sign In</h2>
+            <form id="login-form">
+                <div class="form-group">
+                    <div class="label-row">
+                        <i data-lucide="mail"></i>
+                        <label>Work Email</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="email" id="login-email" class="form-control" placeholder="example@mail.com" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="label-row">
+                        <i data-lucide="lock"></i>
+                        <label>Password</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="login-password" class="form-control" placeholder="••••••••" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn-primary btn-auth">Enter Dashboard <i data-lucide="arrow-right" size="18"></i></button>
+            </form>
+
+            <form id="signup-form" class="hidden">
+                <div class="stepper">
+                    <div class="step-pill active" id="pill-1">1 <span>Basic</span></div>
+                    <div class="step-pill" id="pill-2">2 <span>Business</span></div>
+                    <div class="step-pill" id="pill-3">3 <span>Identity</span></div>
+                    <div class="step-pill" id="pill-4">4 <span>Payment</span></div>
+                </div>
+
+                <!-- Step 1: Basic Info -->
+                <div class="form-step active" id="step-1">
+                    <h3 style="margin-bottom: 1.5rem; color: #1e293b;">Step 1: Account Information</h3>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="user"></i>
+                            <label>Full Name</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="signup-name" class="form-control" placeholder="John Doe" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="mail"></i>
+                            <label>Work Email</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="email" id="signup-email" class="form-control" placeholder="example@mail.com" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="lock"></i>
+                            <label>Password</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="password" id="signup-password" class="form-control" placeholder="••••••••" required minlength="6" oninput="updateStrength(this.value)">
+                            <i data-lucide="eye" class="toggle-password" onclick="togglePassword('signup-password', this)"></i>
+                        </div>
+                        <div class="strength-meter" id="signup-strength" style="height:4px; background:#eee; border-radius:2px; margin-top:8px;"><div class="strength-meter-bar" style="height:100%; width:0%; transition:0.3s;"></div></div>
+                        <small class="password-hint">Must contain 1 number and 1 special letter (#%?/)</small>
+                        <span class="error-msg">Missing number or special character.</span>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="lock"></i>
+                            <label>Confirm Password</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="password" id="signup-confirm-password" class="form-control" placeholder="••••••••" required minlength="6">
+                            <i data-lucide="eye" class="toggle-password" onclick="togglePassword('signup-confirm-password', this)"></i>
+                        </div>
+                        <small class="password-hint" id="confirm-password-hint" style="color: var(--danger); display: none;">Passwords do not match.</small>
+                        <span class="error-msg">Passwords do not match.</span>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="phone"></i>
+                            <label>Phone Number</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="signup-phone" class="form-control" placeholder="0300-1234567" required>
+                        </div>
+                        <span class="error-msg">Invalid Pakistani phone format.</span>
+                    </div>
+                </div>
+
+                <!-- Step 2: Business Info -->
+                <div class="form-step" id="step-2">
+                    <h3 style="margin-bottom: 1.5rem; color: #1e293b;">Step 2: Business Details</h3>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="store"></i>
+                            <label>Shop Name</label>
+                        </div>
+                        <input type="text" id="signup-shop-name" class="form-control" placeholder="Shop Name" required>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="briefcase"></i>
+                            <label>Business Type</label>
+                        </div>
+                        <select id="signup-biz-type" class="form-control">
+                            <option value="Individual">Individual</option>
+                            <option value="Registered Business">Registered Business</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="globe"></i>
+                            <label>Province</label>
+                        </div>
+                        <select id="signup-province" class="form-control" required onchange="handleProvinceChange()"></select>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="map"></i>
+                            <label>City</label>
+                        </div>
+                        <select id="signup-city" class="form-control" required></select>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="map-pin"></i>
+                            <label>Warehouse Address</label>
+                        </div>
+                        <input type="text" id="signup-address" class="form-control" placeholder="Warehouse Address" required>
+                    </div>
+                </div>
+
+                <!-- Step 3: Verification -->
+                <div class="form-step" id="step-3">
+                    <h3 style="margin-bottom: 1.5rem; color: #1e293b;">Step 3: Identity Verification</h3>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="credit-card"></i>
+                            <label>CNIC Number (xxxxx-xxxxxxx-x)</label>
+                        </div>
+                        <input type="text" id="signup-cnic" class="form-control" placeholder="42101-1234567-1" required>
+                        <span class="error-msg">Invalid CNIC format.</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label>CNIC Front Image</label>
+                            <div class="upload-drop-zone" onclick="document.getElementById('cnic-front-input').click()">
+                                <i data-lucide="upload-cloud"></i>
+                                <p style="font-size: 0.75rem; font-weight: 600;">Click to Upload</p>
+                                <input type="file" id="cnic-front-input" hidden accept="image/*" required onchange="handleFile(this, 'cnic-front-preview')">
+                            </div>
+                            <div id="cnic-front-preview" style="margin-top: 10px; display: none;">
+                                <img src="" style="width: 100%; border-radius: 8px; border: 1px solid var(--border);">
+                                <p id="cnic-front-name" style="font-size: 0.7rem; color: var(--success); font-weight: 700; margin-top: 4px;"></p>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>CNIC Back Image</label>
+                            <div class="upload-drop-zone" onclick="document.getElementById('cnic-back-input').click()">
+                                <i data-lucide="upload-cloud"></i>
+                                <p style="font-size: 0.75rem; font-weight: 600;">Click to Upload</p>
+                                <input type="file" id="cnic-back-input" hidden accept="image/*" required onchange="handleFile(this, 'cnic-back-preview')">
+                            </div>
+                            <div id="cnic-back-preview" style="margin-top: 10px; display: none;">
+                                <img src="" style="width: 100%; border-radius: 8px; border: 1px solid var(--border);">
+                                <p id="cnic-back-name" style="font-size: 0.7rem; color: var(--success); font-weight: 700; margin-top: 4px;"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 4: Payment Info -->
+                <div class="form-step" id="step-4">
+                    <h3 style="margin-bottom: 1.5rem; color: #1e293b;">Step 4: Financial Information</h3>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="landmark"></i>
+                            <label>Bank Name</label>
+                        </div>
+                        <select id="signup-bank" class="form-control"></select>
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="user-check"></i>
+                            <label>Account Title</label>
+                        </div>
+                        <input type="text" id="signup-acc-title" class="form-control" placeholder="John Doe">
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="hash"></i>
+                            <label>Account / IBAN</label>
+                        </div>
+                        <input type="text" id="signup-acc-num" class="form-control" placeholder="PK00MEZN...">
+                    </div>
+                    <div class="form-group">
+                        <div class="label-row">
+                            <i data-lucide="wallet"></i>
+                            <label>Mobile Wallet (Optional)</label>
+                        </div>
+                        <input type="text" id="signup-wallet" class="form-control" placeholder="03xx-xxxxxxx">
+                    </div>
+                        <div class="form-group" style="display: flex; align-items: center; gap: 10px; margin-top: 1rem;">
+                    <input type="checkbox" id="signup-privacy" style="width: auto;" onchange="validatePrivacy()">
+                    <label style="margin:0">I agree to the <a href="#">Privacy Policy</a></label>
+                </div>
+                </div>
+
+                <div class="step-footer">
+                    <button type="button" id="btn-prev" class="btn-outline hidden" onclick="moveStep(-1)">Previous</button>
+                    <button type="button" id="btn-next" class="btn-primary" onclick="moveStep(1)" style="margin-left: auto;">Next Step <i data-lucide="arrow-right" size="18"></i></button>
+                    <button type="submit" id="btn-submit" class="btn-primary hidden" disabled style="background: #16a34a; margin-left: auto;">Submit Application <i data-lucide="check" size="18"></i></button>
+                </div>
+            </form>
+            <p style="text-align: center; margin-top: 1.5rem; font-size: 0.9rem;">
+                <a href="#" id="toggle-auth" style="color: var(--accent); font-weight: 600; text-decoration: none;">Don't have an account? Sign Up</a>
+            </p>
+        </div>
+    </div>
+
+    <!-- Dashboard View -->
+    <div id="view-dashboard" class="hidden">
+        <div class="wrapper">
+            <aside>
+                <div class="brand"><i data-lucide="shopping-bag"></i> <span>POOHTER</span></div>
+                <ul class="nav-list">
+                    <li class="nav-item active" onclick="switchSection('dashboard')"><i data-lucide="home"></i> <span>Dashboard</span></li>
+                    <li class="nav-item" onclick="switchSection('products')"><i data-lucide="package"></i> <span>My Products</span></li>
+                    <li class="nav-item" onclick="switchSection('inventory')"><i data-lucide="database"></i> <span>Inventory</span></li>
+                    <li class="nav-item" onclick="switchSection('orders')"><i data-lucide="shopping-cart"></i> <span>Order List</span></li>
+                    <li class="nav-item" onclick="switchSection('analytics')"><i data-lucide="bar-chart-3"></i> <span>Analytics</span></li>
+                </ul>
+                <div class="nav-item logout-btn" onclick="handleLogout()"><i data-lucide="log-out"></i> <span>Sign Out</span></div>
+            </aside>
+
+            <main>
+                <nav class="top-nav">
+                    <div id="section-title-header" style="font-weight: 700; font-size: 1.1rem; color: var(--text-muted);">Overview</div>
+                    <div class="user-profile">
+                        <div class="avatar" id="avatar-initial">S</div>
+                        <span id="nav-seller-name">Seller Name</span>
+                        <i data-lucide="chevron-down" size="16"></i>
+                    </div>
+                </nav>
+
+                <div class="content-body">
+                <!-- SECTION: DASHBOARD -->
+                <section id="section-dashboard">
+                    <div class="section-header">
+                        <h1>Dashboard Overview</h1>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: var(--primary-soft); color: var(--primary);"><i data-lucide="box"></i></div>
+                            <div class="stat-info"><h3>Total Products</h3><p id="stat-products">0</p></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #f0fdf4; color: #16a34a;"><i data-lucide="shopping-cart"></i></div>
+                            <div class="stat-info"><h3>Total Orders</h3><p id="stat-orders">0</p></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #fefce8; color: #ca8a04;"><i data-lucide="dollar-sign"></i></div>
+                            <div class="stat-info"><h3>Total Sales</h3><p id="stat-sales">$0.00</p></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #fef2f2; color: #dc2626;"><i data-lucide="alert-triangle"></i></div>
+                            <div class="stat-info"><h3>Low Stock</h3><p id="stat-low-stock">0</p></div>
+                        </div>
+                    </div>
+                    <div class="data-card">
+                        <div style="padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                            <h2 style="font-size: 1.2rem; font-weight: 800;">Recent Stock Alerts</h2>
+                        </div>
+                        <div id="stock-alerts" style="padding: 1.5rem;"></div>
+                    </div>
+                </section>
+
+                <!-- SECTION: PRODUCTS -->
+                <section id="section-products" class="hidden">
+                    <div class="section-header">
+                        <h1>My Product Catalog</h1>
+                        <button class="btn-primary" onclick="openModal('modal-add-product')"><i data-lucide="plus"></i> Add Product</button>
+                    </div>
+
+                    <div class="data-card">
+                        <table id="product-table">
+                            <thead>
+                                <tr><th>Product Name</th><th>ID</th><th>Price</th><th>Stock</th><th>Action</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- SECTION: INVENTORY -->
+                <section id="section-inventory" class="hidden">
+                    <div class="section-header">
+                        <h1>Inventory Management</h1>
+                    </div>
+                    <div class="data-card">
+                        <table id="inventory-table">
+                            <thead>
+                                <tr><th>Product</th><th>Current Stock</th><th>Quick Update</th><th>Status</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- SECTION: ORDERS -->
+                <section id="section-orders" class="hidden">
+                    <div class="section-header">
+                        <h1>Seller Orders</h1>
+                    </div>
+                    <div class="data-card">
+                        <table id="orders-table">
+                            <thead>
+                                <tr><th>Order #</th><th>Product Items</th><th>Status</th><th>Order Date</th><th>Actions</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- SECTION: ANALYTICS (Placeholder) -->
+                <section id="section-analytics" class="hidden">
+                    <div class="section-header"><h1>Analytics</h1></div>
+                    <div class="data-card" style="padding: 4rem; text-align: center;">
+                        <i data-lucide="bar-chart" size="48" style="color: var(--text-muted); margin-bottom: 1rem;"></i>
+                        <h2>Analytics Dashboard Coming Soon</h2>
+                        <p style="color: var(--text-muted);">We are working on powerful insights for your business.</p>
+                    </div>
+                </section>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="modal-add-product" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 style="font-size: 1.25rem; font-weight: 700;">Add New Product</h2>
+                <button onclick="closeModal('modal-add-product')" style="background:none;"><i data-lucide="x"></i></button>
+            </div>
+            <form id="add-product-form">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Product Name</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="p-name" class="form-control" required placeholder="e.g. Premium Cotton Hoodie">
+                            <button type="button" class="btn-outline" onclick="handleAutoTranslate()" style="white-space: nowrap;">Translate</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Product Name (Urdu)</label>
+                        <input type="text" id="p-name-urdu" class="form-control" dir="rtl" placeholder="مثال: معیاری سوتی ہوڈی">
+                    </div>
+                    <div class="form-group">
+                        <label>Price ($)</label>
+                        <input type="number" id="p-price" class="form-control" required placeholder="29.99" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea id="p-desc" class="form-control" rows="3" placeholder="Tell customers about your product..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Images (Max 5, 4MB each)</label>
+                        <input type="file" id="p-images" class="form-control" multiple accept="image/*" onchange="handleImageSelection(this)">
+                        <div id="image-previews" class="media-preview-container"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>Video (Max 1, 10s, 10MB, MP4)</label>
+                        <input type="file" id="p-video" class="form-control" accept="video/mp4" onchange="handleVideoSelection(this)">
+                        <div id="video-preview" class="media-preview-container"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-outline" style="padding: 0.75rem 1.5rem;" onclick="closeModal('modal-add-product')">Cancel</button>
+                    <button type="submit" id="btn-save-product" class="btn-primary">List Product</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIG & STATE ---
+        const API_BASE = 'http://localhost:3000/api';
+        let TOKEN = localStorage.getItem('eshop_seller_token');
+        let SELLER = JSON.parse(localStorage.getItem('eshop_seller_user'));
+
+        // --- UTILS ---
+        function notify(msg, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const t = document.createElement('div');
+            t.className = `toast toast-${type}`;
+            t.innerHTML = `<i data-lucide="${type === 'success' ? 'check-circle' : 'alert-circle'}"></i> <span>${msg}</span>`;
+            container.appendChild(t);
+            lucide.createIcons();
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 3500);
+        }
+
+        function previewImage(input, previewId) {
+            const previewContainer = document.getElementById(previewId);
+            const previewImg = previewContainer.querySelector('img');
+            
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImg.src = e.target.result;
+                    previewContainer.style.display = 'block';
+                }
+                reader.readAsDataURL(input.files[0]);
+            } else {
+                previewContainer.style.display = 'none';
+            }
+        }
+
+        async function api(endpoint, method = 'GET', body = null) {
+            const config = {
+                method,
+                headers: {}
+            };
+            if (!(body instanceof FormData)) {
+                config.headers['Content-Type'] = 'application/json';
+                if (body) config.body = JSON.stringify(body);
+            } else {
+                config.body = body; // Browser automatically sets Content-Type to multipart/form-data
+            }
+
+            if (TOKEN) config.headers['Authorization'] = `Bearer ${TOKEN}`;
+
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, config);
+                const data = await response.json();
+                if (response.status === 401) {
+                    handleLogout();
+                    throw new Error('Unauthorized');
+                }
+                if (!response.ok) throw new Error(data.error || 'Request failed');
+                return data;
+            } catch (err) {
+                if (err.message !== 'Unauthorized') notify(err.message, 'error');
+                throw err;
+            }
+        }
+
+        // --- NAVIGATION ---
+        function switchSection(sectionId) {
+            document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            
+            document.getElementById('section-title-header').innerText = sectionId.charAt(0).toUpperCase() + sectionId.slice(1);
+            document.getElementById(`section-${sectionId}`).classList.remove('hidden');
+            const navItems = document.querySelectorAll('.nav-item');
+            navItems.forEach(item => {
+                if (item.innerText.toLowerCase().trim().includes(sectionId)) item.classList.add('active');
+            });
+
+            if (sectionId === 'dashboard') loadDashboardStats();
+            if (sectionId === 'products') loadProducts();
+            if (sectionId === 'inventory') loadInventory();
+            if (sectionId === 'orders') loadOrders();
+            lucide.createIcons();
+        }
+
+        function openModal(id) { document.getElementById(id).style.display = 'flex'; }
+        function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+
+        // Handle external clicks to close modals
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                event.target.style.display = 'none';
+            }
+        }
+
+        // --- AUTH LOGIC ---
+        const loginForm = document.getElementById('login-form');
+        const signupForm = document.getElementById('signup-form');
+        const toggleBtn = document.getElementById('toggle-auth');
+        const authTitle = document.getElementById('auth-title');
+        const authCard = document.getElementById('auth-card');
+
+        toggleBtn.onclick = (e) => {
+            e.preventDefault();
+            const isLogin = !loginForm.classList.contains('hidden');
+            if (isLogin) {
+                loginForm.classList.add('hidden');
+                signupForm.classList.remove('hidden');
+                authCard.classList.add('wide');
+                authTitle.innerText = 'Seller Registration';
+                toggleBtn.innerText = 'Already have an account? Sign In';
+            } else {
+                loginForm.classList.remove('hidden');
+                signupForm.classList.add('hidden');
+                authCard.classList.remove('wide');
+                authTitle.innerText = 'Seller Sign In';
+                toggleBtn.innerText = "Don't have an account? Sign Up";
+            }
+        };
+
+        loginForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            try {
+                const data = await api('/seller/login', 'POST', { email, password });
+                TOKEN = data.token;
+                SELLER = data.seller;
+                localStorage.setItem('eshop_seller_token', TOKEN);
+                localStorage.setItem('eshop_seller_user', JSON.stringify(SELLER));
+                initApp();
+            } catch (err) {}
+        };
+
+        signupForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            
+            // Append text fields
+            formData.append('name', document.getElementById('signup-name').value);
+            formData.append('email', document.getElementById('signup-email').value);
+            formData.append('password', document.getElementById('signup-password').value);
+            formData.append('confirmPassword', document.getElementById('signup-confirm-password').value);
+            formData.append('phone', document.getElementById('signup-phone').value);
+            formData.append('shop_name', document.getElementById('signup-shop-name').value);
+            formData.append('business_type', document.getElementById('signup-biz-type').value);
+            formData.append('warehouse_address', document.getElementById('signup-address').value);
+            formData.append('province', document.getElementById('signup-province').value);
+            formData.append('city', document.getElementById('signup-city').value);
+            formData.append('cnic_number', document.getElementById('signup-cnic').value);
+            formData.append('bank_name', document.getElementById('signup-bank').value);
+            formData.append('account_title', document.getElementById('signup-acc-title').value);
+            formData.append('account_number', document.getElementById('signup-acc-num').value);
+            formData.append('mobile_wallet', document.getElementById('signup-wallet').value);
+
+            // Append file fields
+            formData.append('cnic_front', document.getElementById('cnic-front-input').files[0]);
+            formData.append('cnic_back', document.getElementById('cnic-back-input').files[0]);
+
+            try {
+                const data = await api('/seller/register', 'POST', formData);
+                TOKEN = data.token;
+                SELLER = data.seller;
+                localStorage.setItem('eshop_seller_token', TOKEN);
+                localStorage.setItem('eshop_seller_user', JSON.stringify(SELLER));
+                notify('Registration successful!');
+                initApp();
+            } catch (err) {}
+        };
+
+        function handleLogout() {
+            localStorage.removeItem('eshop_seller_token');
+            localStorage.removeItem('eshop_seller_user');
+            location.reload();
+        }
+
+        // --- DATA FETCHING ---
+        async function loadDashboardStats() {
+            try {
+                const products = await api('/seller/products');
+                const orders = await api('/seller/orders');
+                
+                const lowStockCount = products.filter(p => (p.stock_quantity || 0) < 10).length;
+                const totalSales = orders.reduce((acc, o) => {
+                    const sellerPortion = o.seller_items.reduce((sum, i) => sum + (i.unit_price * i.quantity), 0);
+                    return acc + sellerPortion;
+                }, 0);
+                
+                document.getElementById('stat-products').innerText = products.length;
+                document.getElementById('stat-orders').innerText = orders.length;
+                document.getElementById('stat-sales').innerText = `$${totalSales.toFixed(2)}`;
+                document.getElementById('stat-low-stock').innerText = lowStockCount;
+                
+                document.getElementById('avatar-initial').innerText = SELLER.name[0];
+                document.getElementById('nav-seller-name').innerText = SELLER.name;
+
+                const alerts = products.filter(p => p.stock_quantity < 10);
+                const alertDiv = document.getElementById('stock-alerts');
+                if (alerts.length > 0) {
+                    alertDiv.innerHTML = alerts.map(p => `
+                        <div style="padding: 0.75rem 1rem; background: #fff1f2; color: #991b1b; border-radius: 0.5rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 0.875rem;">
+                            <i data-lucide="alert-triangle" size="18"></i>
+                            <span>Stock low for <strong>${p.name}</strong>. Only ${p.stock_quantity || 0} units left.</span>
+                        </div>
+                    `).join('');
+                    lucide.createIcons();
+                } else {
+                    alertDiv.innerHTML = '<p style="text-align:center; color: var(--text-muted);">All stock levels are healthy.</p>';
+                }
+            } catch (err) {}
+        }
+
+        async function loadProducts() {
+            const tbody = document.querySelector('#product-table tbody');
+            tbody.innerHTML = '<tr><td colspan="5" class="skeleton" style="height: 100px;"></td></tr>';
+            try {
+                const data = await api('/seller/products');
+                tbody.innerHTML = data.map(p => `
+                    <tr>
+                        <td style="font-weight: 700;">${p.name}</td>
+                        <td><code style="background: var(--bg-body); padding: 2px 6px; border-radius: 4px;">ID-${p.id}</code></td>
+                        <td style="color: var(--accent); font-weight: 700;">$${Number(p.price).toFixed(2)}</td>
+                        <td>
+                            <span style="font-weight: 600; color: ${p.stock_quantity < 10 ? 'var(--danger)' : 'inherit'}">
+                                ${p.stock_quantity || 0}
+                            </span>
+                        </td>
+                        <td>
+                            <div style="display:flex; gap: 8px;">
+                                <button class="btn-outline"><i data-lucide="edit-3" size="14"></i></button>
+                                <button class="btn-outline" style="color: var(--danger);"><i data-lucide="trash-2" size="14"></i></button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+                lucide.createIcons();
+            } catch (err) {}
+        }
+
+        async function loadInventory() {
+            const tbody = document.querySelector('#inventory-table tbody');
+            try {
+                const data = await api('/seller/products');
+                tbody.innerHTML = data.map(p => `
+                    <tr>
+                        <td style="font-weight: 700;">${p.name}</td>
+                        <td><span id="stock-val-${p.id}" style="font-weight:700; color: ${p.stock_quantity < 10 ? 'var(--danger)' : 'inherit'}">${p.stock_quantity || 0}</span></td>
+                        <td>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="number" id="input-${p.id}" class="stock-input" placeholder="New Qty">
+                                <button class="btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="updateStock(${p.id})">Save</button>
+                            </div>
+                        </td>
+                        <td>
+                            <span class="badge" style="background: ${(p.stock_quantity || 0) > 0 ? '#f0fdf4' : '#fef2f2'}; color: ${(p.stock_quantity || 0) > 0 ? '#16a34a' : '#dc2626'}">
+                                ${(p.stock_quantity || 0) > 0 ? 'In Stock' : 'Out of Stock'}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {}
+        }
+
+        async function updateStock(productId) {
+            const input = document.getElementById(`input-${productId}`);
+            const stock = parseInt(input.value);
+            if (isNaN(stock)) return notify('Enter a valid number', 'error');
+
+            try {
+                await api(`/seller/products/${productId}/stock`, 'PATCH', { stock });
+                notify('Stock level updated');
+                loadInventory();
+            } catch (err) {}
+        }
+
+        async function loadOrders() {
+            const tbody = document.querySelector('#orders-table tbody');
+            try {
+                const orders = await api('/seller/orders');
+                tbody.innerHTML = orders.map(o => `
+                    <tr>
+                        <td><strong>#${o.order_id}</strong></td>
+                        <td>
+                            ${o.seller_items.map(i => `<div>${i.name} (x${i.quantity})</div>`).join('')}
+                        </td>
+                        <td><span class="badge status-${o.status}">${o.status}</span></td>
+                        <td>${new Date(o.created_at).toLocaleDateString()}</td>
+                        <td>
+                            <select onchange="updateOrderStatus(${o.order_id}, this.value)" style="padding: 5px; border-radius: 6px; font-weight: 600;">
+                                <option value="">Change Status</option>
+                                <option value="accepted">Accept Order</option>
+                                <option value="packed">Mark Packed</option>
+                                <option value="shipped">Mark Shipped</option>
+                            </select>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {}
+        }
+
+        async function updateOrderStatus(orderId, newStatus) {
+            if (!newStatus) return;
+            try {
+                await api(`/orders/${orderId}/status`, 'PATCH', { status: newStatus });
+                notify(`Order #${orderId} set to ${newStatus}`);
+                loadOrders();
+            } catch (err) {}
+        }
+
+        function validatePrivacy() {
+            document.getElementById('btn-submit').disabled = !document.getElementById('signup-privacy').checked;
+        }
+
+        /**
+         * Automatically translates English Product Name to Urdu
+         * using the MyMemory Translation API.
+         */
+        async function handleAutoTranslate() {
+            const engName = document.getElementById('p-name').value;
+            const urduField = document.getElementById('p-name-urdu');
+
+            if (!engName) return notify("Please enter a name in English first", "error");
+            
+            urduField.placeholder = "Translating...";
+
+            try {
+                const response = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(engName)}&langpair=en|ur`);
+                const data = await response.json();
+                if (data.responseData && data.responseData.translatedText) {
+                    urduField.value = data.responseData.translatedText;
+                }
+            } catch (error) {
+                console.error("Auto-translation failed:", error);
+                notify("Translation failed. Please try again or type manually.", "error");
+                urduField.placeholder = "مثال: معیاری سوتی ہوڈی";
+            }
+        }
+
+        // --- MEDIA STATE & PREVIEWS ---
+        let selectedImages = [];
+        let selectedVideo = null;
+
+        function handleImageSelection(input) {
+            const files = Array.from(input.files);
+            
+            for (const file of files) {
+                if (selectedImages.length >= 5) {
+                    notify("Max 5 images allowed", "error");
+                    break;
+                }
+                if (file.size > 4 * 1024 * 1024) {
+                    notify(`Image ${file.name} exceeds 4MB`, "error");
+                    continue;
+                }
+                selectedImages.push(file);
+            }
+            input.value = ""; // Clear input to allow re-selecting same files
+            renderMediaPreviews();
+        }
+
+        function handleVideoSelection(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            if (file.size > 10 * 1024 * 1024) {
+                notify("Video exceeds 10MB", "error");
+                input.value = "";
+                return;
+            }
+
+            // Pre-check duration using a temporary video element
+            const video = document.createElement('video');
+            video.preload = 'metadata';
+            video.onloadedmetadata = function() {
+                window.URL.revokeObjectURL(video.src);
+                if (video.duration > 10.5) {
+                    notify("Video duration must be max 10s", "error");
+                    selectedVideo = null;
+                } else {
+                    selectedVideo = file;
+                }
+                renderMediaPreviews();
+            }
+            video.src = URL.createObjectURL(file);
+            input.value = "";
+        }
+
+        function removeImage(index) {
+            selectedImages.splice(index, 1);
+            renderMediaPreviews();
+        }
+
+        function removeVideo() {
+            selectedVideo = null;
+            renderMediaPreviews();
+        }
+
+        function renderMediaPreviews() {
+            const imgContainer = document.getElementById('image-previews');
+            const vidContainer = document.getElementById('video-preview');
+
+            imgContainer.innerHTML = selectedImages.map((file, idx) => `
+                <div class="media-preview-item">
+                    <img src="${URL.createObjectURL(file)}" onload="URL.revokeObjectURL(this.src)">
+                    <div class="remove-media-btn" onclick="removeImage(${idx})"><i data-lucide="x"></i></div>
+                </div>
+            `).join('');
+
+            vidContainer.innerHTML = "";
+            if (selectedVideo) {
+                const url = URL.createObjectURL(selectedVideo);
+                vidContainer.innerHTML = `
+                    <div class="media-preview-item" style="width: 100%; height: auto; max-width: 200px;">
+                        <video src="${url}" controls style="width: 100%; height: auto; border-radius: 8px;"></video>
+                        <div class="remove-media-btn" onclick="removeVideo()"><i data-lucide="x"></i></div>
+                    </div>
+                `;
+            }
+            
+            lucide.createIcons();
+        }
+
+        // --- FORM SUBMISSION ---
+        document.getElementById('add-product-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btn-save-product');
+            btn.disabled = true;
+            btn.innerText = 'Listing...';
+
+            const formData = new FormData();
+            formData.append('name', document.getElementById('p-name').value);
+            formData.append('name_urdu', document.getElementById('p-name-urdu').value);
+            formData.append('price', document.getElementById('p-price').value);
+            formData.append('description', document.getElementById('p-desc').value);
+            
+            selectedImages.forEach(file => {
+                formData.append('product_images', file);
+            });
+            
+            if (selectedVideo) {
+                formData.append('product_video', selectedVideo);
+            }
+
+            try {
+                await api('/seller/products', 'POST', formData);
+                notify('Product added to catalog');
+                e.target.reset();
+                closeModal('modal-add-product');
+                selectedImages = [];
+                selectedVideo = null;
+                renderMediaPreviews();
+                loadProducts();
+            } catch (err) {} finally { btn.disabled = false; btn.innerText = 'List Product'; }
+        };
+
+        // --- MULTI-STEP REGISTRATION LOGIC ---
+        let currentStep = 1;
+        
+        const PAK_PROVINCES = [
+            "Punjab",
+            "Sindh",
+            "Khyber Pakhtunkhwa",
+            "Balochistan",
+            "Gilgit-Baltistan",
+            "Azad Kashmir"
+        ];
+
+        const PAK_LOCATIONS = {
+            "Punjab": [
+                "Lahore","Faisalabad","Rawalpindi","Multan","Sialkot","Gujranwala",
+                "Bahawalpur","Sargodha","Rahim Yar Khan","Okara","Kasur","Sheikhupura",
+                "Jhang","Dera Ghazi Khan","Chiniot"
+            ],
+            "Sindh": [
+                "Karachi","Hyderabad","Sukkur","Larkana","Nawabshah","Mirpur Khas","Jacobabad"
+            ],
+            "Khyber Pakhtunkhwa": [
+                "Peshawar","Mardan","Abbottabad","Mingora","Kohat","Bannu","Dera Ismail Khan"
+            ],
+            "Balochistan": [
+                "Quetta","Gwadar","Turbat","Khuzdar","Zhob"
+            ],
+            "Gilgit-Baltistan": [
+                "Gilgit","Skardu","Hunza"
+            ],
+            "Azad Kashmir": [
+                "Muzaffarabad","Mirpur","Kotli"
+            ]
+        };
+
+        const PAK_BANKS = [
+            "Habib Bank Limited (HBL)",
+            "United Bank Limited (UBL)",
+            "MCB Bank",
+            "Allied Bank Limited (ABL)",
+            "Meezan Bank",
+            "Bank Alfalah",
+            "Standard Chartered Bank Pakistan",
+            "Bank Islami Pakistan",
+            "Faysal Bank",
+            "Askari Bank",
+            "Soneri Bank",
+            "Silk Bank",
+            "Summit Bank",
+            "JS Bank",
+            "Dubai Islamic Bank Pakistan",
+            "Al Baraka Bank Pakistan",
+            "Bank of Punjab (BOP)",
+            "Bank of Khyber (BOK)",
+            "Zarai Taraqiati Bank Limited (ZTBL)",
+            "National Bank of Pakistan (NBP)"
+        ].sort();
+
+        function populateDropdowns() {
+            const provSel = document.getElementById('signup-province');
+            const citySel = document.getElementById('signup-city');
+            const bankSel = document.getElementById('signup-bank');
+
+            // Populate Provinces
+            provSel.innerHTML = '<option value="" disabled selected>Select Province</option>';
+            PAK_PROVINCES.forEach(p => provSel.add(new Option(p, p)));
+
+            // Initialize City dropdown
+            citySel.innerHTML = '<option value="" disabled selected>Select City</option>';
+            citySel.disabled = true;
+
+            // Populate Banks
+            bankSel.innerHTML = '<option value="" disabled selected>Select Bank</option>';
+            PAK_BANKS.forEach(b => bankSel.add(new Option(b, b)));
+        }
+
+        /**
+         * Handles dynamic city population when province changes
+         */
+        function handleProvinceChange() {
+            const province = document.getElementById('signup-province').value;
+            const citySel = document.getElementById('signup-city');
+            
+            citySel.innerHTML = '<option value="" disabled selected>Select City</option>';
+            
+            if (province && PAK_LOCATIONS[province]) {
+                citySel.disabled = false;
+                PAK_LOCATIONS[province].forEach(city => {
+                    citySel.add(new Option(city, city));
+                });
+            } else {
+                citySel.disabled = true;
+            }
+        }
+
+        function moveStep(delta) {
+            if (delta === 1 && !validateStep(currentStep)) return;
+            
+            currentStep += delta;
+            updateStepUI();
+        }
+
+        function validateStep(step) {
+            const container = document.getElementById(`step-${step}`);
+            const inputs = container.querySelectorAll('[required]');
+            let valid = true;
+
+            inputs.forEach(input => {
+                const parent = input.parentElement;
+                parent.classList.remove('invalid');
+                
+                if (!input.value) {
+                    parent.classList.add('invalid');
+                    valid = false;
+                }
+                
+                // Email check
+                if (input.type === 'email' && !input.value.includes('@')) {
+                    parent.classList.add('invalid');
+                    valid = false;
+                }
+
+                // Password complexity check
+                if (input.id === 'signup-password' && !/^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/.test(input.value)) {
+                    parent.classList.add('invalid');
+                    valid = false;
+                }
+
+                // Confirm password check
+                if (input.id === 'signup-confirm-password' && input.value !== document.getElementById('signup-password').value) {
+                    parent.classList.add('invalid');
+                    valid = false; // Passwords do not match
+                }
+
+                // Phone validation (Pakistani format)
+                if (input.id === 'signup-phone' && !/^((\+92)|(0092)|(0))3\d{2}-?\d{7}$/.test(input.value)) {
+                    parent.classList.add('invalid');
+                    valid = false;
+                }
+
+                // CNIC validation (xxxxx-xxxxxxx-x)
+                if (input.id === 'signup-cnic' && !/^\d{5}-\d{7}-\d{1}$/.test(input.value)) {
+                    parent.classList.add('invalid');
+                    valid = false;
+                }
+            });
+            return valid;
+        }
+
+        function updateStepUI() {
+            document.querySelectorAll('.form-step').forEach(s => s.classList.remove('active'));
+            document.getElementById(`step-${currentStep}`).classList.add('active');
+
+            // Pills progress indicator
+            document.querySelectorAll('.step-pill').forEach((p, idx) => {
+                p.classList.remove('active', 'completed');
+                if (idx + 1 < currentStep) p.classList.add('completed');
+                if (idx + 1 === currentStep) p.classList.add('active');
+            });
+
+            // Button visibility
+            document.getElementById('btn-prev').classList.toggle('hidden', currentStep === 1);
+            document.getElementById('btn-next').classList.toggle('hidden', currentStep === 4);
+            document.getElementById('btn-submit').classList.toggle('hidden', currentStep !== 4);
+        }
+
+        function togglePassword(id, icon) {
+            const input = document.getElementById(id);
+            const isPassword = input.type === 'password';
+            input.type = isPassword ? 'text' : 'password';
+            icon.setAttribute('data-lucide', isPassword ? 'eye-off' : 'eye');
+            lucide.createIcons();
+        }
+
+        function updateStrength(val) {
+            const meter = document.getElementById('signup-strength');
+            const bar = meter.querySelector('.strength-meter-bar');
+            if (!val) { bar.style.width = '0%'; return; }
+            
+            let strength = 0;
+            if (val.length >= 6) strength++;
+            if (/[0-9]/.test(val)) strength++;
+            if (/[!@#$%^&*(),.?":{}|<> /]/.test(val)) strength++;
+
+            bar.style.width = (strength === 1 ? '33%' : strength === 2 ? '66%' : '100%');
+            bar.style.backgroundColor = (strength === 1 ? 'var(--danger)' : strength === 2 ? 'var(--warning)' : 'var(--success)');
+        }
+
+        function handleFile(input, previewId) {
+            const previewContainer = document.getElementById(previewId);
+            const nameDisplay = document.getElementById(previewId.replace('preview', 'name'));
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                
+                if (file.size > 2 * 1024 * 1024) {
+                    notify("File too large. Maximum size 2MB.", "error");
+                    input.value = "";
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    previewContainer.querySelector('img').src = e.target.result;
+                    previewContainer.style.display = 'block';
+                    nameDisplay.innerText = "✓ " + file.name;
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        // --- INIT ---
+        function initApp() {
+            document.getElementById('view-login').classList.add('hidden');
+            document.getElementById('view-dashboard').classList.remove('hidden');
+            lucide.createIcons();
+            switchSection('dashboard');
+        }
+
+        if (TOKEN) initApp();
+        lucide.createIcons();
+        populateDropdowns();
+    </script>
+</body>
+</html>

@@ -4,10 +4,20 @@ const pool = require('../config/db');
 
 const signup = async (req, res, next) => {
   try {
-    const { name, email, password, role = 'buyer' } = req.body;
+    const { name, email, password, confirmPassword, phone, address, role = 'buyer' } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: 'Name, email, and password are required' });
+    if (!name || !email || !password || !confirmPassword || !phone || !address) {
+      return res.status(400).json({ error: 'Name, email, password, confirm password, phone, and address are required' });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: 'Passwords do not match.' });
+    }
+
+    // Password complexity check: At least one number and one special character
+    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({ error: 'Password must contain at least one number and one special character.' });
     }
 
     // Check if user already exists
@@ -21,8 +31,8 @@ const signup = async (req, res, next) => {
 
     // Insert user into the database
     const result = await pool.query(
-      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
-      [name, email, hashedPassword, role]
+      'INSERT INTO users (name, email, password, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role',
+      [name, email, hashedPassword, phone, address, role]
     );
 
     const user = result.rows[0];

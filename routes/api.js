@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getOrders, checkout } = require('../controllers/orderController');
+const { getOrders, checkout, updateOrderStatus, deliveryUpdate } = require('../controllers/orderController');
 const { addToCart, getCart, removeFromCart, clearCart } = require('../controllers/cartController');
 const { signup, login } = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware'); // Assuming you have an authMiddleware
@@ -21,6 +21,10 @@ router.delete('/cart', authMiddleware, clearCart);
 
 // Checkout route
 router.post('/checkout', authMiddleware, checkout);
+
+// Order Tracking & Delivery Status
+router.patch('/orders/:id/status', authMiddleware, updateOrderStatus);
+router.post('/delivery/update', authMiddleware, deliveryUpdate);
 
 module.exports = router;
 

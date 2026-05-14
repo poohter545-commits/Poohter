@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poohter | A Trust Where Quality Matters</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #64748b;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #ca8a04;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text: #1e293b;
+        }
+
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 0; }
+        
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .hidden { display: none !important; }
+
+        /* Auth Styles */
+        .auth-box { max-width: 400px; margin: 100px auto; background: var(--card-bg); padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        input, select, textarea { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
+        button { cursor: pointer; padding: 10px 20px; border: none; border-radius: 4px; background: var(--primary); color: white; font-weight: bold; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+        button.secondary { background: var(--secondary); }
+        button.danger { background: var(--danger); }
+        button.success { background: var(--success); }
+
+        /* Layout */
+        nav { background: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1); }
+        .role-badge { padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; background: #e2e8f0; }
+
+        /* Grid & Cards */
+        .panel { display: grid; gap: 20px; margin-top: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1); }
+        .grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #edf2f7; }
+        th { background: #f1f5f9; }
+
+        /* Notifications */
+        #notification { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 4px; color: white; z-index: 1000; transition: all 0.3s; transform: translateY(-100px); }
+        #notification.show { transform: translateY(0); }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+        .stat-card { text-align: center; padding: 20px; background: var(--primary); color: white; border-radius: 8px; }
+        .stat-card h3 { margin: 0; font-size: 2rem; }
+    </style>
+</head>
+<body>
+
+    <div id="notification"></div>
+
+    <!-- Login Section -->
+    <div id="auth-section" class="auth-box">
+        <h2>Login Dashboard</h2>
+        <form id="login-form" class="auth-form">
+            <input type="email" id="login-email" placeholder="Email" required value="admin@test.com">
+            <input type="password" id="login-password" placeholder="Password" required value="password123">
+            <button type="submit" style="width: 100%">Sign In</button>
+        </form>
+
+        <form id="signup-form" class="auth-form hidden">
+            <h3>Register New Account</h3>
+            <input type="text" id="signup-name" placeholder="Name" required>
+            <input type="email" id="signup-email" placeholder="Email" required>
+            <input type="text" id="signup-phone" placeholder="Phone Number" required>
+            <input type="text" id="signup-address" placeholder="Full Address" required>
+            <input type="password" id="signup-password" placeholder="Password (password must contain 1 number and 1 special letter #%?/)" required>
+            <select id="signup-role" required>
+                <option value="buyer">Buyer</option>
+                <option value="seller">Seller</option>
+                <option value="admin">Admin</option>
+            </select>
+            <button type="submit" style="width: 100%">Sign Up</button>
+        </form>
+
+        <p style="text-align: center; margin-top: 15px;">
+            <a href="#" id="toggle-auth-mode">Need an account? Sign Up</a>
+        </p>
+    </div>
+
+    <!-- Main Application -->
+    <div id="app-section" class="hidden">
+        <nav>
+            <div>
+                <strong id="nav-user-name">User</strong>
+                <span id="nav-user-role" class="role-badge">Role</span>
+            </div>
+            <button onclick="logout()" class="danger">Logout</button>
+        </nav>
+
+        <div class="container">
+            <!-- Buyer Panel -->
+            <div id="panel-buyer" class="panel hidden">
+                <h2 style="color: var(--primary); text-align: center; margin-bottom: 20px;">A Trust Where Quality Matters</h2>
+                <div class="card">
+                    <h3>Available Products</h3>
+                    <div id="buyer-products" class="grid-3"></div>
+                </div>
+                <div class="card">
+                    <h3>Your Cart</h3>
+                    <div id="cart-content"></div>
+                    <button id="checkout-btn" class="success" onclick="processCheckout()" style="margin-top: 10px">Checkout</button>
+                </div>
+                <div class="card">
+                    <h3>My Orders</h3>
+                    <div id="buyer-orders"></div>
+                </div>
+            </div>
+
+            <!-- Seller Panel -->
+            <div id="panel-seller" class="panel hidden">
+                <div class="card">
+                    <h3>Add New Product</h3>
+                    <form id="add-product-form">
+                        <input type="text" id="p-name" placeholder="Product Name" required>
+                        <input type="number" id="p-price" placeholder="Price" required>
+                        <textarea id="p-desc" placeholder="Description"></textarea>
+                        <input type="number" id="p-stock" placeholder="Initial Stock" required>
+                        <button type="submit">List Product</button>
+                    </form>
+                </div>
+                <div class="card">
+                    <h3>My Inventory</h3>
+                    <div id="seller-products"></div>
+                </div>
+                <div class="card">
+                    <h3>Seller Orders</h3>
+                    <div id="seller-orders"></div>
+                </div>
+            </div>
+
+            <!-- Warehouse Panel -->
+            <div id="panel-warehouse" class="panel hidden">
+                <div class="card">
+                    <h3>Inventory Management (Warehouse View)</h3>
+                    <div id="warehouse-inventory"></div>
+                </div>
+            </div>
+
+            <!-- Delivery Panel -->
+            <div id="panel-delivery" class="panel hidden">
+                <div class="card" style="max-width: 500px; margin: auto;">
+                    <h3>Update Delivery Status</h3>
+                    <input type="text" id="del-tracking" placeholder="Enter Tracking ID (e.g., TRK-123...)">
+                    <select id="del-status">
+                        <option value="shipped">Shipped</option>
+                        <option value="out_for_delivery">Out for Delivery</option>
+                        <option value="delivered">Delivered</option>
+                    </select>
+                    <button onclick="updateDelivery()" style="width: 100%">Update Status</button>
+                </div>
+            </div>
+
+            <!-- Admin Panel -->
+            <div id="panel-admin" class="panel hidden">
+                <div class="stats-grid" id="admin-stats"></div>
+                <div class="card">
+                    <h3>Manage Users</h3>
+                    <div id="admin-users"></div>
+                </div>
+                <div class="card">
+                    <h3>Manage Sellers</h3>
+                    <div id="admin-sellers"></div>
+                </div>
+                <div class="card">
+                    <h3>Global Orders</h3>
+                    <div id="admin-orders"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000/api';
+        let USER = null;
+        let TOKEN = null;
+
+        // --- CORE FETCH UTILITY ---
+        async function apiFetch(endpoint, method = 'GET', body = null) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+
+            const config = { method, headers };
+            if (body) config.body = JSON.stringify(body);
+
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, config).catch(err => {
+                    throw new Error(`Network Error: Is the backend running at ${API_BASE}?`);
+                });
+
+                let data = {};
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.includes("application/json")) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response: ${text.substring(0, 50)}...`);
+                }
+
+                if (response.status === 401) {
+                    if (!endpoint.includes('/login')) {
+                        showToast('Session expired. Please login again.', 'danger');
+                        logout();
+                    }
+                    return null;
+                }
+
+                if (!response.ok) throw new Error(data.error || 'API Error');
+                return data;
+            } catch (err) {
+                showToast(err.message, 'danger');
+                console.error('Fetch Error:', err);
+                return null;
+            }
+        }
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('notification');
+            toast.textContent = msg;
+            toast.className = `show ${type === 'success' ? 'success' : 'danger'}`;
+            toast.style.backgroundColor = type === 'success' ? 'var(--success)' : 'var(--danger)';
+            setTimeout(() => toast.className = '', 3000);
+        }
+
+        // --- AUTH LOGIC ---
+        const loginForm = document.getElementById('login-form');
+        const signupForm = document.getElementById('signup-form');
+        const toggleAuthModeLink = document.getElementById('toggle-auth-mode');
+
+        toggleAuthModeLink.onclick = (e) => {
+            e.preventDefault();
+            if (loginForm.classList.contains('hidden')) {
+                // Currently on signup form, switch to login
+                loginForm.classList.remove('hidden');
+                signupForm.classList.add('hidden');
+                toggleAuthModeLink.textContent = 'Need an account? Sign Up';
+            } else {
+                // Currently on login form, switch to signup
+                loginForm.classList.add('hidden');
+                signupForm.classList.remove('hidden');
+                toggleAuthModeLink.textContent = 'Already have an account? Login';
+            }
+        };
+
+        loginForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+
+            let data = await apiFetch('/auth/login', 'POST', { email, password });
+
+            if (!data) {
+                data = await apiFetch('/seller/login', 'POST', { email, password });
+            }
+
+            if (data && data.token) {
+                TOKEN = data.token;
+                // The /auth/login endpoint returns 'user', /seller/login returns 'seller'
+                // Normalize to 'user' for consistency in the dashboard
+                if (data.seller) {
+                    USER = { ...data.seller, role: 'seller' }; // Add role explicitly if coming from seller login
+                } else {
+                    USER = data.user;
+                }
+
+                localStorage.setItem('eshop_token', TOKEN);
+                localStorage.setItem('eshop_user', JSON.stringify(USER));
+                initApp();
+            }
+        };
+
+        function logout() {
+            localStorage.removeItem('eshop_token');
+            localStorage.removeItem('eshop_user');
+            location.reload();
+        }
+
+        signupForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('signup-name').value;
+            const email = document.getElementById('signup-email').value;
+            const phone = document.getElementById('signup-phone').value;
+            const address = document.getElementById('signup-address').value;
+            const password = document.getElementById('signup-password').value;
+            const role = document.getElementById('signup-role').value;
+
+            const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
+            if (!passwordRegex.test(password)) {
+                showToast('Password must contain a number and a special character.', 'danger');
+                return;
+            }
+
+            const data = await apiFetch('/auth/signup', 'POST', { name, email, password, phone, address, role });
+
+            if (data && data.token) {
+                showToast('Registration successful! Logging in...', 'success');
+                TOKEN = data.token;
+                USER = data.user;
+                localStorage.setItem('eshop_token', TOKEN);
+                localStorage.setItem('eshop_user', JSON.stringify(USER));
+                initApp(); // Automatically log in the newly registered user
+            }
+        }
+
+        function initApp() {
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('app-section').classList.remove('hidden');
+            document.getElementById('nav-user-name').textContent = USER.name;
+            document.getElementById('nav-user-role').textContent = USER.role;
+            
+            // Hide all panels
+            document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+            
+            // Show relevant panel
+            const activePanel = document.getElementById(`panel-${USER.role}`);
+            if (activePanel) activePanel.classList.remove('hidden');
+
+            // Load Role Data
+            loadRoleSpecificData();
+        }
+
+        function loadRoleSpecificData() {
+            if (USER.role === 'buyer') loadBuyerData();
+            if (USER.role === 'seller') loadSellerData();
+            if (USER.role === 'admin') loadAdminData();
+            if (USER.role === 'warehouse') loadWarehouseData();
+        }
+
+        // --- BUYER ACTIONS ---
+        async function loadBuyerData() {
+            const products = await apiFetch('/products');
+            const cart = await apiFetch('/cart');
+            const orders = await apiFetch('/orders');
+
+            renderBuyerProducts(products?.products || []);
+            renderCart(cart || []);
+            renderOrders(orders || [], 'buyer-orders');
+        }
+
+        function renderBuyerProducts(products) {
+            const container = document.getElementById('buyer-products');
+            container.innerHTML = products.map(p => `
+                <div class="card">
+                    <h4>${p.name}</h4>
+                    <p>${p.description || ''}</p>
+                    <p><strong>$${p.price}</strong></p>
+                    <button onclick="addToCart(${p.id})">Add to Cart</button>
+                </div>
+            `).join('');
+        }
+
+        async function addToCart(product_id) {
+            const res = await apiFetch('/cart', 'POST', { product_id, quantity: 1 });
+            if (res) {
+                showToast('Added to cart');
+                loadBuyerData();
+            }
+        }
+
+        function renderCart(items) {
+            const container = document.getElementById('cart-content');
+            if (items.length === 0) {
+                container.innerHTML = '<p>Your cart is empty.</p>';
+                document.getElementById('checkout-btn').classList.add('hidden');
+                return;
+            }
+            document.getElementById('checkout-btn').classList.remove('hidden');
+            container.innerHTML = `
+                <table>
+                    <tr><th>Item</th><th>Qty</th><th>Price</th><th>Action</th></tr>
+                    ${items.map(i => `
+                        <tr>
+                            <td>${i.product_name}</td>
+                            <td>${i.quantity}</td>
+                            <td>$${i.total_price}</td>
+                            <td><button onclick="removeFromCart(${i.product_id})" class="danger">X</button></td>
+                        </tr>
+                    `).join('')}
+                </table>
+            `;
+        }
+
+        async function removeFromCart(id) {
+            await apiFetch(`/cart/${id}`, 'DELETE');
+            loadBuyerData();
+        }
+
+        async function processCheckout() {
+            const res = await apiFetch('/checkout', 'POST');
+            if (res) {
+                showToast('Order placed! Tracking: ' + res.tracking_id);
+                loadBuyerData();
+            }
+        }
+
+        function renderOrders(orders, targetId) {
+            const container = document.getElementById(targetId);
+            if (!orders || orders.length === 0) {
+                container.innerHTML = '<p>No orders found.</p>';
+                return;
+            }
+            container.innerHTML = `
+                <table>
+                    <tr><th>ID</th><th>Status</th><th>Tracking</th><th>Total</th></tr>
+                    ${orders.map(o => `
+                        <tr>
+                            <td>${o.id || o.order_id}</td>
+                            <td><span class="role-badge" style="background: #fef3c7">${o.status}</span></td>
+                            <td><code>${o.tracking_id || 'N/A'}</code></td>
+                            <td>$${o.total_price}</td>
+                        </tr>
+                    `).join('')}
+                </table>
+            `;
+        }
+
+        // --- SELLER ACTIONS ---
+        async function loadSellerData() {
+            const products = await apiFetch('/seller/products');
+            const orders = await apiFetch('/seller/orders');
+            renderSellerProducts(products || []);
+            renderOrders(orders || [], 'seller-orders');
+        }
+
+        document.getElementById('add-product-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const body = {
+                name: document.getElementById('p-name').value,
+                price: parseFloat(document.getElementById('p-price').value),
+                description: document.getElementById('p-desc').value,
+                initial_stock: parseInt(document.getElementById('p-stock').value)
+            };
+            const res = await apiFetch('/seller/products', 'POST', body);
+            if (res) {
+                showToast('Product listed successfully');
+                e.target.reset();
+                loadSellerData();
+            }
+        };
+
+        function renderSellerProducts(products) {
+            const container = document.getElementById('seller-products');
+            container.innerHTML = `
+                <table>
+                    <tr><th>ID</th><th>Name</th><th>Stock</th><th>Update Stock</th></tr>
+                    ${products.map(p => `
+                        <tr>
+                            <td>${p.id}</td>
+                            <td>${p.name}</td>
+                            <td><strong>${p.stock_quantity}</strong></td>
+                            <td>
+                                <input type="number" id="stock-val-${p.id}" style="width: 70px; margin: 0" placeholder="New">
+                                <button onclick="setStock(${p.id})" class="secondary">Set</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </table>
+            `;
+        }
+
+        async function setStock(id) {
+            const stock = parseInt(document.getElementById(`stock-val-${id}`).value);
+            const res = await apiFetch(`/seller/products/${id}/stock`, 'PATCH', { stock });
+            if (res) {
+                showToast('Stock updated');
+                loadSellerData();
+            }
+        }
+
+        // --- WAREHOUSE ACTIONS ---
+        async function loadWarehouseData() {
+            // Warehouse often uses similar views to admin or seller for stock
+            // Using product view as baseline for stock management
+            const products = await apiFetch('/products');
+            const container = document.getElementById('warehouse-inventory');
+            container.innerHTML = `
+                <table>
+                    <tr><th>Product</th><th>Status</th><th>Stock</th><th>Action</th></tr>
+                    ${(products.products || []).map(p => `
+                        <tr>
+                            <td>${p.name}</td>
+                            <td><span class="role-badge">Active</span></td>
+                            <td>${p.stock_quantity || 0}</td>
+                            <td><button onclick="updateStatus(${p.id}, 'approved')">Approve</button></td>
+                        </tr>
+                    `).join('')}
+                </table>
+            `;
+        }
+
+        // --- DELIVERY ACTIONS ---
+        async function updateDelivery() {
+            const tracking_id = document.getElementById('del-tracking').value;
+            const status = document.getElementById('del-status').value;
+            
+            if (!tracking_id) return showToast('Tracking ID required', 'danger');
+
+            const res = await apiFetch('/delivery/update', 'POST', { tracking_id, status });
+            if (res) {
+                showToast(`Status updated to ${status}`);
+                document.getElementById('del-tracking').value = '';
+            }
+        }
+
+        // --- ADMIN ACTIONS ---
+        async function loadAdminData() {
+            const stats = await apiFetch('/admin/dashboard');
+            const users = await apiFetch('/admin/users');
+            const sellers = await apiFetch('/admin/sellers');
+            const orders = await apiFetch('/admin/orders');
+
+            if (stats) {
+                document.getElementById('admin-stats').innerHTML = `
+                    <div class="stat-card"><h3>${stats.total_users}</h3><p>Users</p></div>
+                    <div class="stat-card"><h3>${stats.total_sellers}</h3><p>Sellers</p></div>
+                    <div class="stat-card"><h3>${stats.total_orders}</h3><p>Orders</p></div>
+                    <div class="stat-card" style="background: var(--success)"><h3>$${stats.total_revenue.toFixed(2)}</h3><p>Revenue</p></div>
+                `;
+            }
+
+            if (users) {
+                document.getElementById('admin-users').innerHTML = `
+                    <table>
+                        <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th></tr>
+                        ${users.map(u => `<tr><td>${u.id}</td><td>${u.name}</td><td>${u.email}</td><td>${u.role}</td></tr>`).join('')}
+                    </table>
+                `;
+            }
+
+            if (sellers) {
+                document.getElementById('admin-sellers').innerHTML = `
+                    <table>
+                        <tr><th>ID</th><th>Name</th><th>Email</th></tr>
+                        ${sellers.map(s => `<tr><td>${s.id}</td><td>${s.name}</td><td>${s.email}</td></tr>`).join('')}
+                    </table>
+                `;
+            }
+
+            renderOrders(orders || [], 'admin-orders');
+        }
+
+        // Auto-login logic
+        window.onload = () => {
+            const savedToken = localStorage.getItem('eshop_token');
+            const savedUser = localStorage.getItem('eshop_user');
+            if (savedToken && savedUser) {
+                TOKEN = savedToken;
+                USER = JSON.parse(savedUser);
+                initApp();
+            }
+        };
+    </script>
+</body>
+</html>

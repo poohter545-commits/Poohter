@@ -15,9 +15,11 @@ const roleGuard = (requiredRole) => {
 const isSeller = roleGuard('seller');
 const isBuyer = roleGuard('buyer');
 const isAdmin = roleGuard('admin');
+const isTopTeam = roleGuard('topteam');
 
 module.exports = {
   isSeller,
   isBuyer,
   isAdmin,
+  isTopTeam,
 };
