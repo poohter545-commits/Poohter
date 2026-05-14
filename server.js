@@ -89,6 +89,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res, next) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/db-health', async (req, res, next) => {
   try {
     await pool.query('SELECT 1');
     res.json({ status: 'ok', database: 'connected' });
@@ -112,16 +116,17 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 const startServer = async () => {
-  try {
-    await pool.query('SELECT 1');
-    console.log('Connected to PostgreSQL');
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error('Failed to connect to PostgreSQL:', error.message);
-    process.exit(1);
-  }
+  app.listen(PORT, async () => {
+    console.log(`Server running on port ${PORT}`);
+
+    try {
+      await pool.query('SELECT 1');
+      console.log('Connected to PostgreSQL');
+    } catch (error) {
+      console.error('PostgreSQL connection check failed:', error.message);
+      console.error('Set DATABASE_URL in Render before using API routes that require the database.');
+    }
+  });
 };
 
 startServer();
