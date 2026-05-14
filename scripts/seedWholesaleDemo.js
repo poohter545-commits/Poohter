@@ -1,8 +1,9 @@
 const pool = require('../config/db');
-const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
+const { ensureWholesaleTables, seedDummyWholesaler } = require('../utils/wholesaleFlow');
 
 const run = async () => {
   await ensureWholesaleTables(pool);
+  await seedDummyWholesaler(pool);
   const wholesaler = await pool.query(
     "SELECT id, email, shop_name, status FROM wholesalers WHERE email = 'wholesale@poohter.local'"
   );

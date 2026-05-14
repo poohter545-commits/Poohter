@@ -218,7 +218,9 @@ const ensureWholesaleTables = async (clientOrPool) => {
     )
   `);
 
-  await seedDummyWholesaler(clientOrPool);
+  if (process.env.SEED_DEMO_DATA === 'true') {
+    await seedDummyWholesaler(clientOrPool);
+  }
 };
 
 const seedDummyWholesaler = async (clientOrPool) => {
@@ -414,4 +416,5 @@ module.exports = {
   wholesaleOrderSelect,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
+  seedDummyWholesaler,
 };

@@ -19,3 +19,5 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com
+      - key: SEED_DEMO_DATA
+        value: false

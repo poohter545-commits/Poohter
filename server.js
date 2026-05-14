@@ -11,6 +11,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const topteamRoutes = require('./routes/topteamRoutes');
 const wholesalerRoutes = require('./routes/wholesalerRoutes');
 const logger = require('./middleware/logger');
+const { initProductionDb } = require('./scripts/initProductionDb');
 
 dotenv.config();
 
@@ -120,7 +121,7 @@ const startServer = async () => {
     console.log(`Server running on port ${PORT}`);
 
     try {
-      await pool.query('SELECT 1');
+      await initProductionDb();
       console.log('Connected to PostgreSQL');
     } catch (error) {
       console.error('PostgreSQL connection check failed:', error.message);
