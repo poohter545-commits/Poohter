@@ -39,6 +39,13 @@ const publicWholesaler = (row) => ({
   mobile_wallet: row.mobile_wallet,
   status: row.status,
   rejected_reason: row.rejected_reason,
+  topteam_report_status: row.topteam_report_status,
+  topteam_report_reason: row.topteam_report_reason,
+  topteam_reported_at: row.topteam_reported_at,
+  topteam_reported_by: row.topteam_reported_by,
+  topteam_reviewed_at: row.topteam_reviewed_at,
+  ban_reason: row.ban_reason,
+  banned_at: row.banned_at,
   approved_at: row.approved_at,
   created_at: row.created_at,
 });
@@ -120,6 +127,9 @@ const loginWholesaler = async (req, res, next) => {
     if (!wholesaler || !(await bcrypt.compare(password || '', wholesaler.password))) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+    if (wholesaler.status === 'banned') {
+      return res.status(403).json({ error: `Your wholesaler account was banned by Top Team. Reason: ${wholesaler.ban_reason || 'Policy review failed.'}` });
+    }
     if (wholesaler.status !== 'approved') {
       return res.status(403).json({ error: `Your wholesaler account is ${wholesaler.status}. Admin approval is required before login.` });
     }
@@ -139,6 +149,9 @@ const getWholesalerProfile = async (req, res, next) => {
     await ensureWholesaleTables(pool);
     const result = await pool.query('SELECT * FROM wholesalers WHERE id = $1', [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler profile not found' });
+    if (result.rows[0].status === 'banned') {
+      return res.status(403).json({ error: `This wholesaler account is banned by Top Team. Reason: ${result.rows[0].ban_reason || 'Policy review failed.'}` });
+    }
     res.json({ wholesaler: publicWholesaler(result.rows[0]) });
   } catch (error) {
     next(error);
@@ -148,6 +161,9 @@ const getWholesalerProfile = async (req, res, next) => {
 const requireApprovedWholesaler = async (wholesalerId) => {
   const result = await pool.query('SELECT id, status FROM wholesalers WHERE id = $1', [wholesalerId]);
   if (!result.rows.length) throw Object.assign(new Error('Wholesaler profile not found'), { status: 404 });
+  if (result.rows[0].status === 'banned') {
+    throw Object.assign(new Error('This wholesaler account is banned by Top Team'), { status: 403 });
+  }
   if (result.rows[0].status !== 'approved') {
     throw Object.assign(new Error('Admin approval is required before using wholesaler operations'), { status: 403 });
   }
@@ -564,6 +580,41 @@ const updateAdminWholesalerStatus = async (req, res, next) => {
   }
 };
 
+const reportWholesalerToTopTeam = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const reason = textValue(req.body.reason);
+
+    if (!reason) {
+      return res.status(400).json({ error: 'Report reason is required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE wholesalers
+       SET topteam_report_status = 'pending',
+           topteam_report_reason = $1,
+           topteam_reported_at = NOW(),
+           topteam_reported_by = COALESCE($2, 'admin'),
+           topteam_reviewed_at = NULL
+       WHERE id = $3
+         AND status = 'approved'
+       RETURNING *`,
+      [reason, req.user?.email || req.user?.role || 'admin', req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Approved wholesaler not found' });
+    }
+
+    res.json({
+      wholesaler: publicWholesaler(result.rows[0]),
+      message: 'Wholesaler problem reported to Top Team.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getAdminWholesaleOrders = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
@@ -624,6 +675,7 @@ module.exports = {
   getSellerWholesaleOrders,
   getAdminWholesalers,
   updateAdminWholesalerStatus,
+  reportWholesalerToTopTeam,
   getAdminWholesaleOrders,
   reviewWholesaleOrderByAdmin,
 };

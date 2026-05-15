@@ -10,6 +10,7 @@ const {
   ensureSalesPlatformsTable,
   getSalesPlatforms,
 } = require('../utils/salesPlatforms');
+const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
 
 const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 
@@ -54,6 +55,7 @@ const ensureReturnTable = async () => {
 };
 
 const ensureExecutiveTables = async () => {
+  await ensureWholesaleTables(pool);
   await ensureReturnTable();
   await ensureSalesPlatformsTable(pool);
   await pool.query(`
@@ -184,7 +186,8 @@ const getOverview = async (req, res, next) => {
       targets,
       platforms,
       productPlatformPricing,
-      pendingPriceProducts
+      pendingPriceProducts,
+      reportedWholesalers
     ] = await Promise.all([
       pool.query(`
         SELECT
@@ -313,7 +316,8 @@ const getOverview = async (req, res, next) => {
           (SELECT COUNT(*) FROM products WHERE COALESCE(status, 'pending') = 'pending') AS pending_products,
           (SELECT COUNT(*) FROM return_requests WHERE status = 'requested') AS open_returns,
           (SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5) AS low_stock_items,
-          (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process
+          (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process,
+          (SELECT COUNT(*) FROM wholesalers WHERE status = 'approved' AND topteam_report_status = 'pending') AS reported_wholesalers
       `)
       ,
       getPayoutSummary(pool, null, PROFIT_RATE),
@@ -494,6 +498,19 @@ const getOverview = async (req, res, next) => {
         WHERE COALESCE(p.status, 'pending') = 'topteam_pending'
         ORDER BY p.warehouse_received_at DESC NULLS LAST, p.created_at DESC
         LIMIT 30
+      `),
+      pool.query(`
+        SELECT
+          w.*,
+          COUNT(DISTINCT wp.id) AS product_count,
+          COUNT(DISTINCT wo.id) AS order_count
+        FROM wholesalers w
+        LEFT JOIN wholesale_products wp ON wp.wholesaler_id = w.id
+        LEFT JOIN wholesale_orders wo ON wo.wholesaler_id = w.id
+        WHERE w.status = 'approved'
+          AND w.topteam_report_status = 'pending'
+        GROUP BY w.id
+        ORDER BY w.topteam_reported_at DESC NULLS LAST, w.created_at DESC
       `)
     ]);
 
@@ -651,6 +668,12 @@ const getOverview = async (req, res, next) => {
           returns: numberValue(row.returns),
           units: numberValue(row.units),
           refunds: numberValue(row.refunds)
+        })),
+        reported_wholesalers: reportedWholesalers.rows.map(row => ({
+          ...row,
+          id: numberValue(row.id),
+          product_count: numberValue(row.product_count),
+          order_count: numberValue(row.order_count)
         }))
       },
       customer_health: {
@@ -681,7 +704,8 @@ const getOverview = async (req, res, next) => {
         pending_products: numberValue(attention.rows[0].pending_products),
         open_returns: numberValue(attention.rows[0].open_returns),
         low_stock_items: numberValue(attention.rows[0].low_stock_items),
-        orders_in_process: numberValue(attention.rows[0].orders_in_process)
+        orders_in_process: numberValue(attention.rows[0].orders_in_process),
+        reported_wholesalers: numberValue(attention.rows[0].reported_wholesalers)
       },
       payouts,
       required_for_true_profit: [
@@ -725,6 +749,43 @@ const markSellerPayoutPaid = async (req, res, next) => {
     next(error);
   } finally {
     client.release();
+  }
+};
+
+const banWholesaler = async (req, res, next) => {
+  try {
+    await ensureExecutiveTables();
+    const wholesalerId = Number(req.params.id);
+    const reason = textValue(req.body.reason) || 'Banned by Top Team after admin report';
+
+    if (!Number.isInteger(wholesalerId) || wholesalerId <= 0) {
+      return res.status(400).json({ error: 'Valid wholesaler ID is required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE wholesalers
+       SET status = 'banned',
+           topteam_report_status = 'banned',
+           topteam_reviewed_at = NOW(),
+           ban_reason = $1,
+           banned_at = NOW()
+       WHERE id = $2
+       RETURNING id, cnic_number, name, email, phone, shop_name, city, status,
+         topteam_report_status, topteam_report_reason, topteam_reported_at,
+         topteam_reviewed_at, ban_reason, banned_at`,
+      [reason, wholesalerId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Wholesaler not found' });
+    }
+
+    res.json({
+      wholesaler: result.rows[0],
+      message: 'Wholesaler banned by Top Team.',
+    });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -993,6 +1054,7 @@ module.exports = {
   login,
   getOverview,
   markSellerPayoutPaid,
+  banWholesaler,
   saveSalesPlatform,
   saveProductCost,
   saveOrderCost,

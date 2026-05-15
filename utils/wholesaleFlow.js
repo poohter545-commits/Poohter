@@ -153,6 +153,16 @@ const ensureWholesaleTables = async (clientOrPool) => {
       password_changed_at TIMESTAMP
     )
   `);
+  await clientOrPool.query(`
+    ALTER TABLE wholesalers
+      ADD COLUMN IF NOT EXISTS topteam_report_status TEXT DEFAULT 'clear',
+      ADD COLUMN IF NOT EXISTS topteam_report_reason TEXT,
+      ADD COLUMN IF NOT EXISTS topteam_reported_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS topteam_reported_by TEXT,
+      ADD COLUMN IF NOT EXISTS topteam_reviewed_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS ban_reason TEXT,
+      ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP
+  `);
 
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS wholesale_products (
