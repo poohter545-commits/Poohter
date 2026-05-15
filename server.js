@@ -102,7 +102,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res, next) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', version: '2026-05-15-local-file-cors' });
 });
 
 app.get('/db-health', async (req, res, next) => {
