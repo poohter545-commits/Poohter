@@ -51,6 +51,7 @@ const allowedOrigins = new Set([
 
 const isAllowedOrigin = (origin) => {
   if (!origin || allowedOrigins.has(origin)) return true;
+  if (origin === 'null') return true;
 
   try {
     const { hostname, protocol } = new URL(origin);
