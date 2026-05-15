@@ -55,7 +55,16 @@ const isAllowedOrigin = (origin) => {
 
   try {
     const { hostname, protocol } = new URL(origin);
-    return protocol === 'https:' && hostname.endsWith('.onrender.com') && hostname.startsWith('poohter-');
+    if (['localhost', '127.0.0.1', '[::1]'].includes(hostname)) return true;
+
+    const isPoohterDeployHost = hostname.includes('poohter') && [
+      '.onrender.com',
+      '.vercel.app',
+      '.netlify.app',
+      '.github.io',
+    ].some((suffix) => hostname.endsWith(suffix));
+
+    return protocol === 'https:' && (hostname === 'poohter.com' || hostname.endsWith('.poohter.com') || isPoohterDeployHost);
   } catch (error) {
     return false;
   }
@@ -102,7 +111,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res, next) => {
-  res.json({ status: 'ok', version: '2026-05-15-local-file-cors' });
+  res.json({ status: 'ok', version: '2026-05-15-expanded-cors' });
 });
 
 app.get('/db-health', async (req, res, next) => {
