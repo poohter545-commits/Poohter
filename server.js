@@ -49,6 +49,17 @@ const allowedOrigins = new Set([
   ...envOrigins,
 ]);
 
+const isAllowedOrigin = (origin) => {
+  if (!origin || allowedOrigins.has(origin)) return true;
+
+  try {
+    const { hostname, protocol } = new URL(origin);
+    return protocol === 'https:' && hostname.endsWith('.onrender.com') && hostname.startsWith('poohter-');
+  } catch (error) {
+    return false;
+  }
+};
+
 // Ensure required upload directories exist on startup
 const uploadDirs = [
   'uploads/products/images/',
@@ -67,7 +78,7 @@ uploadDirs.forEach(dir => {
 // Configure CORS for better security
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`CORS blocked origin: ${origin}`));
