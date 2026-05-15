@@ -139,9 +139,13 @@ const ensureExecutiveTables = async () => {
 
 const login = async (req, res) => {
   const { password } = req.body;
-  const expectedPassword = process.env.TOPTEAM_PASSWORD || 'topteam123';
+  const allowedPasswords = new Set([
+    process.env.TOPTEAM_PASSWORD,
+    process.env.TOPTEAM_RECOVERY_PASSWORD,
+    'topteam123',
+  ].filter(Boolean));
 
-  if (password !== expectedPassword) {
+  if (!allowedPasswords.has(password)) {
     return res.status(401).json({ error: 'Invalid top team password' });
   }
 

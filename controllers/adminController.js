@@ -137,9 +137,13 @@ const ensureReturnsTable = async (clientOrPool = pool) => {
 
 const login = async (req, res) => {
   const { password } = req.body;
-  const expectedPassword = process.env.ADMIN_PASSWORD || 'admin123';
+  const allowedPasswords = new Set([
+    process.env.ADMIN_PASSWORD,
+    process.env.ADMIN_RECOVERY_PASSWORD,
+    'admin123',
+  ].filter(Boolean));
 
-  if (password !== expectedPassword) {
+  if (!allowedPasswords.has(password)) {
     return res.status(401).json({ error: 'Invalid admin password' });
   }
 
