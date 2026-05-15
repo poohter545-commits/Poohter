@@ -529,6 +529,25 @@ const updateAdminWholesalerStatus = async (req, res, next) => {
     if (!['approved', 'rejected', 'pending'].includes(status)) {
       return res.status(400).json({ error: 'Invalid wholesaler status' });
     }
+    if (status === 'rejected') {
+      const result = await pool.query(
+        `DELETE FROM wholesalers
+         WHERE id = $1
+         RETURNING id, cnic_number, name, email, shop_name`,
+        [req.params.id]
+      );
+
+      if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler not found' });
+
+      return res.json({
+        wholesaler: {
+          ...publicWholesaler({ ...result.rows[0], status: 'rejected' }),
+          deleted: true,
+        },
+        message: 'Wholesaler application rejected and removed. Wholesaler can register again with fresh details.',
+      });
+    }
+
     const result = await pool.query(
       `UPDATE wholesalers
        SET status = $1,

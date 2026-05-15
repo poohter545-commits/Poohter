@@ -243,6 +243,28 @@ const updateSellerStatus = async (req, res, next) => {
     }
 
     await ensureSellerReviewColumns();
+    if (status === 'rejected') {
+      const result = await pool.query(
+        `DELETE FROM sellers
+         WHERE id = $1
+         RETURNING id, cnic_number AS seller_id, name, email, shop_name`,
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Seller not found' });
+      }
+
+      return res.status(200).json({
+        seller: {
+          ...result.rows[0],
+          status: 'rejected',
+          deleted: true,
+        },
+        message: 'Seller application rejected and removed. Seller can register again with fresh details.',
+      });
+    }
+
     const result = await pool.query(
       `UPDATE sellers
        SET status = $1::text,
