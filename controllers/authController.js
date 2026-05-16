@@ -1,53 +1,136 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
+
+const PASSWORD_REGEX = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
+const JWT_SECRET = process.env.JWT_SECRET || 'your_default_secret';
+
+const validatePassword = (password, confirmPassword) => {
+  if (typeof password !== 'string' || password.length < 6) {
+    return 'Password must be at least 6 characters long.';
+  }
+  if (confirmPassword !== undefined && password !== confirmPassword) {
+    return 'Passwords do not match.';
+  }
+  if (!PASSWORD_REGEX.test(password)) {
+    return 'Password must contain at least one number and one special character.';
+  }
+  return '';
+};
+
+const signUserToken = (user) => jwt.sign(
+  { id: user.id, email: user.email, role: user.role },
+  JWT_SECRET,
+  { expiresIn: '1h' }
+);
+
+const normalizeAccountType = (accountType) => {
+  const cleanType = String(accountType || 'buyer').trim().toLowerCase();
+  return ['buyer', 'seller', 'wholesaler'].includes(cleanType) ? cleanType : 'buyer';
+};
+
+const findAccountByEmail = async (accountType, email) => {
+  if (accountType === 'seller') {
+    const result = await pool.query('SELECT id, name, email FROM sellers WHERE LOWER(email) = LOWER($1)', [email]);
+    return result.rows[0];
+  }
+  if (accountType === 'wholesaler') {
+    const result = await pool.query('SELECT id, name, email FROM wholesalers WHERE LOWER(email) = LOWER($1)', [email]);
+    return result.rows[0];
+  }
+  const result = await pool.query('SELECT id, name, email FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+  return result.rows[0];
+};
+
+const updateAccountPassword = async (accountType, email, hashedPassword) => {
+  if (accountType === 'seller') {
+    return pool.query('UPDATE sellers SET password = $1 WHERE LOWER(email) = LOWER($2) RETURNING id', [hashedPassword, email]);
+  }
+  if (accountType === 'wholesaler') {
+    return pool.query('UPDATE wholesalers SET password = $1 WHERE LOWER(email) = LOWER($2) RETURNING id', [hashedPassword, email]);
+  }
+  return pool.query('UPDATE users SET password = $1 WHERE LOWER(email) = LOWER($2) RETURNING id', [hashedPassword, email]);
+};
 
 const signup = async (req, res, next) => {
   try {
-    const { name, email, password, confirmPassword, phone, address, role = 'buyer' } = req.body;
+    const { name, email, password, confirmPassword, phone, address } = req.body;
+    const cleanEmail = normalizeEmail(email);
 
-    if (!name || !email || !password || !confirmPassword || !phone || !address) {
+    if (!name || !cleanEmail || !password || !confirmPassword || !phone || !address) {
       return res.status(400).json({ error: 'Name, email, password, confirm password, phone, and address are required' });
     }
 
-    if (password !== confirmPassword) {
-      return res.status(400).json({ error: 'Passwords do not match.' });
-    }
-
-    // Password complexity check: At least one number and one special character
-    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
-    if (!passwordRegex.test(password)) {
-      return res.status(400).json({ error: 'Password must contain at least one number and one special character.' });
-    }
+    const passwordError = validatePassword(password, confirmPassword);
+    if (passwordError) return res.status(400).json({ error: passwordError });
 
     // Check if user already exists
-    const userExists = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const userExists = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
-    // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
+    await createEmailOtp({
+      email: cleanEmail,
+      purpose: 'signup',
+      accountType: 'buyer',
+      displayName: name,
+      payload: {
+        name,
+        email: cleanEmail,
+        password_hash: hashedPassword,
+        phone,
+        address,
+        role: 'buyer',
+      },
+    });
 
-    // Insert user into the database
+    res.status(202).json({
+      message: 'Verification code sent to your email. Enter the OTP to create your buyer account.',
+      requiresOtp: true,
+      email: cleanEmail,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifySignup = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const cleanEmail = normalizeEmail(email);
+    const pendingUser = await verifyEmailOtp({
+      email: cleanEmail,
+      purpose: 'signup',
+      accountType: 'buyer',
+      otp,
+    });
+
+    const userExists = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
+    if (userExists.rows.length > 0) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
     const result = await pool.query(
       'INSERT INTO users (name, email, password, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role',
-      [name, email, hashedPassword, phone, address, role]
+      [
+        pendingUser.name,
+        pendingUser.email,
+        pendingUser.password_hash,
+        pendingUser.phone,
+        pendingUser.address,
+        'buyer',
+      ]
     );
 
     const user = result.rows[0];
 
-    // Generate a JWT token (Matches the structure seen in your index.html)
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || 'your_default_secret',
-      { expiresIn: '1h' }
-    );
-
     res.status(201).json({
-      message: 'User registered successfully',
+      message: 'Email verified. User registered successfully.',
       user,
-      token
+      token: signUserToken(user)
     });
   } catch (error) {
     next(error);
@@ -77,21 +160,72 @@ const login = async (req, res, next) => {
     }
 
     // 3. Generate JWT Token
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || 'your_default_secret',
-      { expiresIn: '1h' }
-    );
-
     // 4. Send response (preventing the hang)
     res.status(200).json({
       message: 'Login successful',
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
-      token
+      token: signUserToken(user)
     });
   } catch (error) {
     next(error);
   }
 };
 
-module.exports = { signup, login };
+const requestPasswordReset = async (req, res, next) => {
+  try {
+    const cleanEmail = normalizeEmail(req.body.email);
+    const accountType = normalizeAccountType(req.body.accountType);
+    const account = cleanEmail ? await findAccountByEmail(accountType, cleanEmail) : null;
+
+    if (account) {
+      await createEmailOtp({
+        email: cleanEmail,
+        purpose: 'password_reset',
+        accountType,
+        displayName: account.name,
+      });
+    }
+
+    res.json({
+      message: 'If this email exists, a password reset OTP has been sent.',
+      requiresOtp: true,
+      email: cleanEmail,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  try {
+    const cleanEmail = normalizeEmail(req.body.email);
+    const accountType = normalizeAccountType(req.body.accountType);
+    const passwordError = validatePassword(req.body.password, req.body.confirmPassword);
+    if (passwordError) return res.status(400).json({ error: passwordError });
+
+    await verifyEmailOtp({
+      email: cleanEmail,
+      purpose: 'password_reset',
+      accountType,
+      otp: req.body.otp,
+    });
+
+    const hashedPassword = await bcrypt.hash(req.body.password, 10);
+    const result = await updateAccountPassword(accountType, cleanEmail, hashedPassword);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Account not found.' });
+    }
+
+    res.json({ message: 'Password changed successfully. You can login with your new password.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  signup,
+  verifySignup,
+  login,
+  requestPasswordReset,
+  resetPassword,
+};

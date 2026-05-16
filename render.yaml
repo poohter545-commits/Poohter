@@ -17,6 +17,14 @@ services:
         sync: false
       - key: TOPTEAM_PASSWORD
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        value: Poohter <onboarding@resend.dev>
+      - key: RESEND_REPLY_TO
+        value: poohter545@gmail.com
+      - key: OTP_SECRET
+        sync: false
       - key: CORS_ORIGINS
         value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com
       - key: SEED_DEMO_DATA

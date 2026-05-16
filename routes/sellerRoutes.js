@@ -114,6 +114,7 @@ router.post(
   ]), 
   sellerController.register
 ); 
+router.post('/register/verify', sellerController.verifySellerRegistration);
 router.post('/login', sellerController.login);       // Publicly accessible login
 
 // Protected Seller Routes

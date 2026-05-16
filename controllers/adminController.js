@@ -1,6 +1,5 @@
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
 const { createUniqueOrderCode } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
@@ -273,41 +272,6 @@ const updateSellerStatus = async (req, res, next) => {
        WHERE id = $3
        RETURNING id, cnic_number AS seller_id, name, email, shop_name, status, rejected_reason`,
       [status, reason || null, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Seller not found' });
-    }
-
-    res.json({ seller: result.rows[0] });
-  } catch (error) {
-    next(error);
-  }
-};
-
-const updateSellerPassword = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { password } = req.body;
-
-    if (typeof password !== 'string' || password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
-    }
-
-    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
-    if (!passwordRegex.test(password)) {
-      return res.status(400).json({ error: 'Password must contain at least one number and one special character.' });
-    }
-
-    await ensureSellerReviewColumns();
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      `UPDATE sellers
-       SET password = $1,
-           password_changed_at = NOW()
-       WHERE id = $2
-       RETURNING id, cnic_number AS seller_id, name, email, shop_name, status, password_changed_at`,
-      [hashedPassword, id]
     );
 
     if (result.rows.length === 0) {
@@ -957,7 +921,6 @@ module.exports = {
   getAllSellers,
   getPlatforms,
   updateSellerStatus,
-  updateSellerPassword,
   getAllProducts,
   updateProductStatus,
   finalizeWarehouseProduct,

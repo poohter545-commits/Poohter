@@ -49,7 +49,6 @@ router.get('/platforms', adminController.getPlatforms);
 router.patch('/sellers/:id/status', adminController.updateSellerStatus);
 router.patch('/wholesalers/:id/status', wholesaleController.updateAdminWholesalerStatus);
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
-router.patch('/sellers/:id/password', adminController.updateSellerPassword);
 router.get('/products', adminController.getAllProducts);
 router.patch('/products/:id/status', adminController.updateProductStatus);
 router.patch('/products/:id/stock', adminController.updateProductStock);

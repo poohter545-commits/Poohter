@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 const {
   createCode,
   ensureWholesaleTables,
@@ -72,15 +73,68 @@ const registerWholesaler = async (req, res, next) => {
       return res.status(400).json({ error: 'Password must contain at least one number and one special character.' });
     }
 
+    const cleanEmail = normalizeEmail(email);
     const duplicate = await pool.query(
       'SELECT id FROM wholesalers WHERE email = $1 OR cnic_number = $2 LIMIT 1',
-      [textValue(email), textValue(cnic_number)]
+      [cleanEmail, textValue(cnic_number)]
     );
     if (duplicate.rows.length) {
       return res.status(400).json({ error: 'A wholesaler with this email or CNIC already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    await createEmailOtp({
+      email: cleanEmail,
+      purpose: 'signup',
+      accountType: 'wholesaler',
+      displayName: name,
+      payload: {
+        name: textValue(name),
+        email: cleanEmail,
+        password_hash: hashedPassword,
+        phone: textValue(phone),
+        shop_name: textValue(shop_name),
+        business_type: textValue(business_type),
+        warehouse_address: textValue(warehouse_address) || textValue(city),
+        city: textValue(city),
+        cnic_number: textValue(cnic_number),
+        cnic_front: req.files?.cnic_front?.[0]?.path || null,
+        cnic_back: req.files?.cnic_back?.[0]?.path || null,
+        bank_name: textValue(bank_name),
+        account_title: textValue(account_title),
+        account_number: textValue(account_number),
+        mobile_wallet: textValue(mobile_wallet),
+      },
+    });
+
+    res.status(202).json({
+      message: 'Verification code sent to your email. Enter the OTP to submit your wholesaler application.',
+      requiresOtp: true,
+      email: cleanEmail,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifyWholesalerRegistration = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const pendingWholesaler = await verifyEmailOtp({
+      email: req.body.email,
+      purpose: 'signup',
+      accountType: 'wholesaler',
+      otp: req.body.otp,
+    });
+
+    const duplicate = await pool.query(
+      'SELECT id FROM wholesalers WHERE email = $1 OR cnic_number = $2 LIMIT 1',
+      [pendingWholesaler.email, pendingWholesaler.cnic_number]
+    );
+    if (duplicate.rows.length) {
+      return res.status(400).json({ error: 'A wholesaler with this email or CNIC already exists' });
+    }
+
     const result = await pool.query(
       `INSERT INTO wholesalers (
         name, email, password, phone, shop_name, business_type, warehouse_address, city,
@@ -89,27 +143,27 @@ const registerWholesaler = async (req, res, next) => {
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'pending')
        RETURNING *`,
       [
-        textValue(name),
-        textValue(email),
-        hashedPassword,
-        textValue(phone),
-        textValue(shop_name),
-        textValue(business_type),
-        textValue(warehouse_address) || textValue(city),
-        textValue(city),
-        textValue(cnic_number),
-        req.files?.cnic_front?.[0]?.path || null,
-        req.files?.cnic_back?.[0]?.path || null,
-        textValue(bank_name),
-        textValue(account_title),
-        textValue(account_number),
-        textValue(mobile_wallet),
+        pendingWholesaler.name,
+        pendingWholesaler.email,
+        pendingWholesaler.password_hash,
+        pendingWholesaler.phone,
+        pendingWholesaler.shop_name,
+        pendingWholesaler.business_type,
+        pendingWholesaler.warehouse_address || pendingWholesaler.city,
+        pendingWholesaler.city,
+        pendingWholesaler.cnic_number,
+        pendingWholesaler.cnic_front,
+        pendingWholesaler.cnic_back,
+        pendingWholesaler.bank_name,
+        pendingWholesaler.account_title,
+        pendingWholesaler.account_number,
+        pendingWholesaler.mobile_wallet,
       ]
     );
 
     const wholesaler = publicWholesaler(result.rows[0]);
     res.status(201).json({
-      message: 'Wholesaler registration submitted. Admin approval is required before dashboard access.',
+      message: 'Email verified. Wholesaler registration submitted. Admin approval is required before dashboard access.',
       wholesaler,
     });
   } catch (error) {
@@ -661,6 +715,7 @@ const reviewWholesaleOrderByAdmin = async (req, res, next) => {
 
 module.exports = {
   registerWholesaler,
+  verifyWholesalerRegistration,
   loginWholesaler,
   getWholesalerProfile,
   createWholesalerProduct,

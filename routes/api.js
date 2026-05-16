@@ -2,12 +2,21 @@ const express = require('express');
 const router = express.Router();
 const { getOrders, checkout, updateOrderStatus, deliveryUpdate } = require('../controllers/orderController');
 const { addToCart, getCart, removeFromCart, clearCart } = require('../controllers/cartController');
-const { signup, login } = require('../controllers/authController');
+const {
+  signup,
+  verifySignup,
+  login,
+  requestPasswordReset,
+  resetPassword,
+} = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware'); // Assuming you have an authMiddleware
 
 // Auth routes
 router.post('/auth/signup', signup);
+router.post('/auth/signup/verify', verifySignup);
 router.post('/auth/login', login);
+router.post('/auth/password/forgot', requestPasswordReset);
+router.post('/auth/password/reset', resetPassword);
 
 // Route to get all orders for the authenticated user
 // Protected by authMiddleware to ensure req.user.id is available

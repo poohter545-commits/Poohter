@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { getPayoutSummary } = require('../utils/sellerPayouts');
+const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 
 /**
  * Helper to generate JWT for Sellers
@@ -94,7 +95,8 @@ const register = async (req, res, next) => {
       return res.status(400).json({ error: 'Password must contain at least one number and one special character.' });
     }
 
-    const sellerExists = await pool.query('SELECT id FROM sellers WHERE email = $1', [email]);
+    const cleanEmail = normalizeEmail(email);
+    const sellerExists = await pool.query('SELECT id FROM sellers WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
     if (sellerExists.rows.length > 0) {
       return res.status(400).json({ error: 'A seller with this email already exists' });
     }
@@ -104,6 +106,58 @@ const register = async (req, res, next) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    await createEmailOtp({
+      email: cleanEmail,
+      purpose: 'signup',
+      accountType: 'seller',
+      displayName: name,
+      payload: {
+        name,
+        email: cleanEmail,
+        password_hash: hashedPassword,
+        phone,
+        shop_name,
+        business_type,
+        warehouse_address: warehouse_address || city || '',
+        city,
+        cnic_number,
+        cnic_front,
+        cnic_back,
+        bank_name,
+        account_title,
+        account_number,
+        mobile_wallet,
+      },
+    });
+
+    res.status(202).json({
+      message: 'Verification code sent to your email. Enter the OTP to submit your seller application.',
+      requiresOtp: true,
+      email: cleanEmail,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifySellerRegistration = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const pendingSeller = await verifyEmailOtp({
+      email,
+      purpose: 'signup',
+      accountType: 'seller',
+      otp,
+    });
+
+    const sellerExists = await pool.query('SELECT id FROM sellers WHERE LOWER(email) = LOWER($1)', [pendingSeller.email]);
+    if (sellerExists.rows.length > 0) {
+      return res.status(400).json({ error: 'A seller with this email already exists' });
+    }
+    const cnicExists = await pool.query('SELECT id FROM sellers WHERE cnic_number = $1', [pendingSeller.cnic_number]);
+    if (cnicExists.rows.length > 0) {
+      return res.status(400).json({ error: 'A seller with this CNIC already exists' });
+    }
 
     const query = `
       INSERT INTO sellers (
@@ -118,17 +172,28 @@ const register = async (req, res, next) => {
     `;
 
     const values = [
-      name, email, hashedPassword, phone,
-      shop_name, business_type, warehouse_address || city || '', city,
-      cnic_number, cnic_front, cnic_back,
-      bank_name, account_title, account_number, mobile_wallet,
+      pendingSeller.name,
+      pendingSeller.email,
+      pendingSeller.password_hash,
+      pendingSeller.phone,
+      pendingSeller.shop_name,
+      pendingSeller.business_type,
+      pendingSeller.warehouse_address || pendingSeller.city || '',
+      pendingSeller.city,
+      pendingSeller.cnic_number,
+      pendingSeller.cnic_front,
+      pendingSeller.cnic_back,
+      pendingSeller.bank_name,
+      pendingSeller.account_title,
+      pendingSeller.account_number,
+      pendingSeller.mobile_wallet,
       'pending'
     ];
 
     const result = await pool.query(query, values);
 
     res.status(201).json({ 
-      message: 'Seller registration submitted successfully. Your account is currently pending approval.', 
+      message: 'Email verified. Seller registration submitted successfully. Your account is currently pending approval.',
       seller: result.rows[0],
       requiresApproval: true
     });
@@ -432,6 +497,7 @@ const getSellerPayouts = async (req, res, next) => {
 
 module.exports = {
   register,
+  verifySellerRegistration,
   login,
   getProfile,
   createProduct,
