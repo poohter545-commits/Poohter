@@ -63,7 +63,6 @@ router.patch(
 router.get('/orders', adminController.getAllOrders);
 router.post('/orders/manual', adminController.createManualOrder);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
-router.post('/orders/:id/payment', adminController.recordOrderPayment);
 router.get('/returns', adminController.getAllReturns);
 router.post('/returns/manual', adminController.createManualReturn);
 router.get('/wholesale/orders', wholesaleController.getAdminWholesaleOrders);

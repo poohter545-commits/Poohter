@@ -20,7 +20,7 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
-        value: Poohter <onboarding@resend.dev>
+        value: Poohter <noreply@poohter.com>
       - key: RESEND_REPLY_TO
         value: poohter545@gmail.com
       - key: OTP_SECRET

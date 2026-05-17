@@ -36,6 +36,30 @@ const pctChange = (current, previous) => {
   return ((currentValue - previousValue) / previousValue) * 100;
 };
 
+const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
+  await clientOrPool.query(`
+    ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'pending',
+      ADD COLUMN IF NOT EXISTS payment_received_amount NUMERIC(12,2) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS payment_received_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS payment_reference TEXT,
+      ADD COLUMN IF NOT EXISTS payment_note TEXT,
+      ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP
+  `);
+  await clientOrPool.query(`
+    CREATE TABLE IF NOT EXISTS delivery_updates (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await clientOrPool.query(`
+    ALTER TABLE delivery_updates
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()
+  `);
+};
+
 const ensureReturnTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS return_requests (
@@ -58,6 +82,7 @@ const ensureExecutiveTables = async () => {
   await ensureWholesaleTables(pool);
   await ensureReturnTable();
   await ensureSalesPlatformsTable(pool);
+  await ensureOrderPaymentColumns(pool);
   await pool.query(`
     ALTER TABLE products
       ADD COLUMN IF NOT EXISTS admin_price NUMERIC(12,2),
@@ -187,7 +212,9 @@ const getOverview = async (req, res, next) => {
       platforms,
       productPlatformPricing,
       pendingPriceProducts,
-      reportedWholesalers
+      reportedWholesalers,
+      paymentQueue,
+      closedPaymentOrders
     ] = await Promise.all([
       pool.query(`
         SELECT
@@ -511,6 +538,57 @@ const getOverview = async (req, res, next) => {
           AND w.topteam_report_status = 'pending'
         GROUP BY w.id
         ORDER BY w.topteam_reported_at DESC NULLS LAST, w.created_at DESC
+      `),
+      pool.query(`
+        SELECT
+          o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
+          o.total_price, o.payment_status, o.payment_received_amount, o.payment_reference,
+          o.payment_note, o.payment_received_at, o.closed_at, o.created_at,
+          CASE
+            WHEN o.source = 'manual' THEN COALESCE(NULLIF(o.platform, ''), 'Manual outside platform')
+            ELSE COALESCE(NULLIF(o.platform, ''), 'Poohter app / website')
+          END AS platform_label,
+          CASE WHEN o.source = 'manual' THEN 'Outside platform manual order' ELSE 'Poohter automatic order' END AS order_origin,
+          COALESCE(o.customer_name, u.name) AS customer_name,
+          COALESCE(o.customer_phone, u.phone) AS customer_phone,
+          COALESCE(o.customer_email, u.email) AS customer_email,
+          COALESCE(json_agg(json_build_object(
+            'product_id', p.id,
+            'product_uid', p.product_uid,
+            'product_name', p.name,
+            'quantity', oi.quantity,
+            'price', oi.price
+          )) FILTER (WHERE oi.id IS NOT NULL), '[]'::json) AS items
+        FROM orders o
+        LEFT JOIN users u ON o.user_id = u.id
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        LEFT JOIN products p ON oi.product_id = p.id
+        WHERE o.status != 'cancelled'
+          AND o.status != 'successful'
+          AND COALESCE(o.payment_status, 'pending') != 'received'
+        GROUP BY o.id, u.id
+        ORDER BY o.created_at DESC
+        LIMIT 80
+      `),
+      pool.query(`
+        SELECT
+          o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
+          o.total_price, o.payment_status, o.payment_received_amount, o.payment_reference,
+          o.payment_note, o.payment_received_at, o.closed_at, o.created_at,
+          CASE
+            WHEN o.source = 'manual' THEN COALESCE(NULLIF(o.platform, ''), 'Manual outside platform')
+            ELSE COALESCE(NULLIF(o.platform, ''), 'Poohter app / website')
+          END AS platform_label,
+          CASE WHEN o.source = 'manual' THEN 'Outside platform manual order' ELSE 'Poohter automatic order' END AS order_origin,
+          COALESCE(o.customer_name, u.name) AS customer_name,
+          COALESCE(o.customer_phone, u.phone) AS customer_phone,
+          COALESCE(o.customer_email, u.email) AS customer_email
+        FROM orders o
+        LEFT JOIN users u ON o.user_id = u.id
+        WHERE o.status = 'successful'
+           OR COALESCE(o.payment_status, 'pending') = 'received'
+        ORDER BY COALESCE(o.closed_at, o.payment_received_at, o.created_at) DESC
+        LIMIT 30
       `)
     ]);
 
@@ -674,6 +752,21 @@ const getOverview = async (req, res, next) => {
           id: numberValue(row.id),
           product_count: numberValue(row.product_count),
           order_count: numberValue(row.order_count)
+        })),
+        payment_queue: paymentQueue.rows.map(row => ({
+          ...row,
+          total_price: numberValue(row.total_price),
+          payment_received_amount: numberValue(row.payment_received_amount),
+          items: Array.isArray(row.items) ? row.items.map(item => ({
+            ...item,
+            quantity: numberValue(item.quantity),
+            price: numberValue(item.price)
+          })) : []
+        })),
+        closed_payment_orders: closedPaymentOrders.rows.map(row => ({
+          ...row,
+          total_price: numberValue(row.total_price),
+          payment_received_amount: numberValue(row.payment_received_amount)
         }))
       },
       customer_health: {
@@ -719,6 +812,75 @@ const getOverview = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+const recordOrderPayment = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const receivedAmount = Number(req.body.payment_received_amount ?? req.body.amount_received ?? req.body.amount);
+    const reference = textValue(req.body.reference);
+    const note = textValue(req.body.note);
+
+    if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      return res.status(400).json({ error: 'Payment received amount must be greater than zero' });
+    }
+
+    await ensureOrderPaymentColumns(client);
+    await client.query('BEGIN');
+
+    const orderResult = await client.query(
+      `SELECT id, order_code, total_price, status
+       FROM orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id]
+    );
+
+    if (orderResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+    if (order.status === 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Cancelled orders cannot be closed as successful' });
+    }
+
+    const totalPrice = Number(order.total_price || 0);
+    if (receivedAmount < totalPrice - 0.01) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Received payment cannot be less than the order total' });
+    }
+
+    const result = await client.query(
+      `UPDATE orders
+       SET status = 'successful',
+           payment_status = 'received',
+           payment_received_amount = $1,
+           payment_received_at = NOW(),
+           payment_reference = $2,
+           payment_note = $3,
+           closed_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [receivedAmount, reference || null, note || null, id]
+    );
+
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [id, 'successful']
+    );
+
+    await client.query('COMMIT');
+    res.json({ order: result.rows[0] });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -1054,6 +1216,7 @@ module.exports = {
   login,
   getOverview,
   markSellerPayoutPaid,
+  recordOrderPayment,
   banWholesaler,
   saveSalesPlatform,
   saveProductCost,

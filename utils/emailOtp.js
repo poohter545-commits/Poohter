@@ -3,6 +3,8 @@ const pool = require('../config/db');
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES || 10);
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
+const OTP_RESEND_COOLDOWN_SECONDS = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60);
+const OTP_MAX_RESENDS = Number(process.env.OTP_MAX_RESENDS || 5);
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 const normalizeAccountType = (accountType) => String(accountType || 'buyer').trim().toLowerCase();
@@ -17,10 +19,18 @@ const ensureEmailOtpTable = async (clientOrPool = pool) => {
       otp_hash TEXT NOT NULL,
       payload JSONB,
       attempts INTEGER NOT NULL DEFAULT 0,
+      resend_count INTEGER NOT NULL DEFAULT 0,
+      last_sent_at TIMESTAMP DEFAULT NOW(),
       expires_at TIMESTAMP NOT NULL,
       consumed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     )
+  `);
+
+  await clientOrPool.query(`
+    ALTER TABLE email_otps
+      ADD COLUMN IF NOT EXISTS resend_count INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP DEFAULT NOW()
   `);
 
   await clientOrPool.query(`
@@ -58,7 +68,7 @@ const sendEmail = async ({ to, subject, html, text }) => {
     throw new Error('Email service is not configured. Set RESEND_API_KEY on the backend.');
   }
 
-  const from = process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || 'Poohter <onboarding@resend.dev>';
+  const from = process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || 'Poohter <noreply@poohter.com>';
   const replyTo = process.env.RESEND_REPLY_TO || process.env.SUPPORT_EMAIL || 'poohter545@gmail.com';
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -78,7 +88,11 @@ const sendEmail = async ({ to, subject, html, text }) => {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.message || data.error || 'Could not send verification email.');
+    const message = data.message || data.error || 'Could not send verification email.';
+    if (String(message).toLowerCase().includes('testing emails')) {
+      throw new Error('Email service is in Resend testing mode. Verify poohter.com in Resend and set RESEND_FROM_EMAIL to Poohter <noreply@poohter.com>.');
+    }
+    throw new Error(message);
   }
 
   return data;
@@ -128,6 +142,10 @@ const createEmailOtp = async ({ email, purpose, accountType = 'buyer', displayNa
   const cleanAccountType = normalizeAccountType(accountType);
   const code = generateOtp();
   await ensureEmailOtpTable();
+  await sendEmail({
+    to: cleanEmail,
+    ...otpEmailContent({ code, purpose, accountType: cleanAccountType, displayName }),
+  });
   await pool.query(
     `UPDATE email_otps
      SET consumed_at = NOW()
@@ -150,12 +168,78 @@ const createEmailOtp = async ({ email, purpose, accountType = 'buyer', displayNa
     ]
   );
 
+  return { email: cleanEmail, expiresInMinutes: OTP_TTL_MINUTES };
+};
+
+const resendEmailOtp = async ({ email, purpose, accountType = 'buyer' }) => {
+  const cleanEmail = normalizeEmail(email);
+  const cleanAccountType = normalizeAccountType(accountType);
+  if (!cleanEmail) throw new Error('Email is required.');
+
+  await ensureEmailOtpTable();
+  const result = await pool.query(
+    `SELECT *
+     FROM email_otps
+     WHERE LOWER(email) = LOWER($1)
+       AND purpose = $2
+       AND account_type = $3
+       AND consumed_at IS NULL
+       AND expires_at > NOW()
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [cleanEmail, purpose, cleanAccountType]
+  );
+
+  const otpRow = result.rows[0];
+  if (!otpRow) throw new Error('OTP is invalid or expired. Please request a new code.');
+
+  const secondsSinceLastSend = Math.floor((Date.now() - new Date(otpRow.last_sent_at || otpRow.created_at).getTime()) / 1000);
+  if (secondsSinceLastSend < OTP_RESEND_COOLDOWN_SECONDS) {
+    const retryAfterSeconds = OTP_RESEND_COOLDOWN_SECONDS - secondsSinceLastSend;
+    const error = new Error(`Please wait ${retryAfterSeconds} seconds before requesting another OTP.`);
+    error.status = 429;
+    error.retryAfterSeconds = retryAfterSeconds;
+    throw error;
+  }
+
+  const resendCount = Number(otpRow.resend_count || 0);
+  if (resendCount >= OTP_MAX_RESENDS) {
+    const error = new Error('OTP resend limit reached. Please restart the signup or password reset flow.');
+    error.status = 429;
+    throw error;
+  }
+
+  const code = generateOtp();
+  const payload = otpRow.payload || null;
+  const displayName = payload?.name || payload?.shop_name || '';
+
   await sendEmail({
     to: cleanEmail,
     ...otpEmailContent({ code, purpose, accountType: cleanAccountType, displayName }),
   });
 
-  return { email: cleanEmail, expiresInMinutes: OTP_TTL_MINUTES };
+  await pool.query(
+    `UPDATE email_otps
+     SET otp_hash = $1,
+         attempts = 0,
+         resend_count = resend_count + 1,
+         last_sent_at = NOW(),
+         expires_at = NOW() + ($2::int * interval '1 minute')
+     WHERE id = $3`,
+    [
+      hashOtp({ email: cleanEmail, purpose, accountType: cleanAccountType, otp: code }),
+      OTP_TTL_MINUTES,
+      otpRow.id,
+    ]
+  );
+
+  return {
+    email: cleanEmail,
+    expiresInMinutes: OTP_TTL_MINUTES,
+    resendCount: resendCount + 1,
+    maxResends: OTP_MAX_RESENDS,
+    cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+  };
 };
 
 const verifyEmailOtp = async ({ email, purpose, accountType = 'buyer', otp }) => {
@@ -198,5 +282,6 @@ module.exports = {
   createEmailOtp,
   ensureEmailOtpTable,
   normalizeEmail,
+  resendEmailOtp,
   verifyEmailOtp,
 };

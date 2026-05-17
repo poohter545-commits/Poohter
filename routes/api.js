@@ -6,6 +6,7 @@ const {
   signup,
   verifySignup,
   login,
+  resendOtp,
   requestPasswordReset,
   resetPassword,
 } = require('../controllers/authController');
@@ -15,6 +16,7 @@ const authMiddleware = require('../middleware/authMiddleware'); // Assuming you 
 router.post('/auth/signup', signup);
 router.post('/auth/signup/verify', verifySignup);
 router.post('/auth/login', login);
+router.post('/auth/otp/resend', resendOtp);
 router.post('/auth/password/forgot', requestPasswordReset);
 router.post('/auth/password/reset', resetPassword);
 

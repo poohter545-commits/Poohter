@@ -1,7 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
-const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
+const { createEmailOtp, normalizeEmail, resendEmailOtp, verifyEmailOtp } = require('../utils/emailOtp');
 
 const PASSWORD_REGEX = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_default_secret';
@@ -196,6 +196,27 @@ const requestPasswordReset = async (req, res, next) => {
   }
 };
 
+const resendOtp = async (req, res, next) => {
+  try {
+    const cleanEmail = normalizeEmail(req.body.email);
+    const accountType = normalizeAccountType(req.body.accountType);
+    const purpose = String(req.body.purpose || '').trim() === 'password_reset' ? 'password_reset' : 'signup';
+
+    const result = await resendEmailOtp({
+      email: cleanEmail,
+      purpose,
+      accountType,
+    });
+
+    res.json({
+      message: 'A new OTP has been sent to your email.',
+      ...result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const resetPassword = async (req, res, next) => {
   try {
     const cleanEmail = normalizeEmail(req.body.email);
@@ -226,6 +247,7 @@ module.exports = {
   signup,
   verifySignup,
   login,
+  resendOtp,
   requestPasswordReset,
   resetPassword,
 };

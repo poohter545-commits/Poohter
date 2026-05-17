@@ -91,6 +91,33 @@ const sellerPayoutQuery = `
     WHERE status = 'paid'
       AND ($1::integer IS NULL OR seller_id = $1::integer)
     GROUP BY seller_id
+  ),
+  seller_orders AS (
+    SELECT
+      p.seller_id,
+      json_agg(
+        json_build_object(
+          'order_id', o.id,
+          'order_code', o.order_code,
+          'status', o.status,
+          'platform', CASE WHEN o.source = 'manual' THEN COALESCE(NULLIF(o.platform, ''), 'Manual') ELSE 'Poohter app' END,
+          'customer_name', COALESCE(o.customer_name, u.name),
+          'created_at', o.created_at,
+          'product_uid', p.product_uid,
+          'product_name', p.name,
+          'quantity', oi.quantity,
+          'admin_price', COALESCE(p.admin_price, p.price, oi.price, 0),
+          'seller_amount', oi.quantity * COALESCE(p.admin_price, p.price, oi.price, 0)
+        )
+        ORDER BY o.created_at DESC, o.id DESC
+      ) AS payout_orders
+    FROM products p
+    JOIN order_items oi ON oi.product_id = p.id
+    JOIN orders o ON o.id = oi.order_id
+    LEFT JOIN users u ON o.user_id = u.id
+    WHERE o.status IN ('delivered', 'successful')
+      AND ($1::integer IS NULL OR p.seller_id = $1::integer)
+    GROUP BY p.seller_id
   )
   SELECT
     s.id,
@@ -114,11 +141,13 @@ const sellerPayoutQuery = `
     COALESCE(ss.delivered_orders, 0) AS delivered_orders,
     ss.first_sale_at,
     ss.last_sale_at,
-    paid.last_paid_at
+    paid.last_paid_at,
+    COALESCE(so.payout_orders, '[]'::json) AS payout_orders
   FROM sellers s
   LEFT JOIN seller_sales ss ON ss.seller_id = s.id
   LEFT JOIN seller_refunds sr ON sr.seller_id = s.id
   LEFT JOIN paid ON paid.seller_id = s.id
+  LEFT JOIN seller_orders so ON so.seller_id = s.id
   WHERE s.status = 'approved'
     AND ($1::integer IS NULL OR s.id = $1::integer)
   ORDER BY pending_payout DESC, seller_earning DESC
@@ -135,6 +164,14 @@ const normalizePayoutRow = (row) => ({
   pending_payout: numberValue(row.pending_payout),
   units_sold: numberValue(row.units_sold),
   delivered_orders: numberValue(row.delivered_orders),
+  payout_orders: Array.isArray(row.payout_orders)
+    ? row.payout_orders.map((order) => ({
+      ...order,
+      quantity: numberValue(order.quantity),
+      admin_price: numberValue(order.admin_price),
+      seller_amount: numberValue(order.seller_amount),
+    }))
+    : [],
 });
 
 const getSellerPayoutRows = async (clientOrPool, sellerId = null, commissionRate = DEFAULT_COMMISSION_RATE) => {

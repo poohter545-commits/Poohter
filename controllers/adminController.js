@@ -159,7 +159,6 @@ const getDashboardStats = async (req, res, next) => {
       userCount,
       sellerCount,
       orderCount,
-      revenueSum,
       pendingSellers,
       pendingProducts,
       lowStock,
@@ -170,7 +169,6 @@ const getDashboardStats = async (req, res, next) => {
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query('SELECT COUNT(*) FROM sellers'),
       pool.query('SELECT COUNT(*) FROM orders'),
-      pool.query('SELECT SUM(total_price) FROM orders WHERE status != $1', ['cancelled']),
       pool.query("SELECT COUNT(*) FROM sellers WHERE status = 'pending'"),
       pool.query("SELECT COUNT(*) FROM products WHERE COALESCE(status, 'pending') = 'pending'"),
       pool.query('SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5'),
@@ -183,7 +181,6 @@ const getDashboardStats = async (req, res, next) => {
       total_users: parseInt(userCount.rows[0].count, 10),
       total_sellers: parseInt(sellerCount.rows[0].count, 10),
       total_orders: parseInt(orderCount.rows[0].count, 10),
-      total_revenue: parseFloat(revenueSum.rows[0].sum || 0),
       pending_sellers: parseInt(pendingSellers.rows[0].count, 10),
       pending_products: parseInt(pendingProducts.rows[0].count, 10),
       low_stock: parseInt(lowStock.rows[0].count, 10),
@@ -294,7 +291,8 @@ const getAllProducts = async (req, res, next) => {
         s.shop_name, s.name AS seller_name, s.cnic_number AS public_seller_id,
         COALESCE(i.stock_quantity, 0) AS stock_quantity,
         COALESCE(media.image_count, 0) AS image_count,
-        COALESCE(media.video_count, 0) AS video_count
+        COALESCE(media.video_count, 0) AS video_count,
+        COALESCE(files.media_files, '[]'::json) AS media_files
        FROM products p
        LEFT JOIN sellers s ON p.seller_id = s.id
        LEFT JOIN inventory i ON p.id = i.product_id
@@ -305,6 +303,12 @@ const getAllProducts = async (req, res, next) => {
          FROM product_media
          GROUP BY product_id
        ) media ON p.id = media.product_id
+       LEFT JOIN (
+         SELECT product_id,
+          json_agg(json_build_object('id', id, 'type', type, 'file_path', file_path) ORDER BY created_at, id) AS media_files
+         FROM product_media
+         GROUP BY product_id
+       ) files ON p.id = files.product_id
        ORDER BY p.created_at DESC`
     );
 
@@ -481,7 +485,6 @@ const updateProductStock = async (req, res, next) => {
 
 const getAllOrders = async (req, res, next) => {
   try {
-    await ensureOrderPaymentColumns();
     const query = `
       SELECT 
         o.id, 
@@ -489,14 +492,7 @@ const getAllOrders = async (req, res, next) => {
         o.source,
         o.platform,
         o.external_order_ref,
-        o.total_price, 
         o.status, 
-        o.payment_status,
-        o.payment_received_amount,
-        o.payment_received_at,
-        o.payment_reference,
-        o.payment_note,
-        o.closed_at,
         o.created_at,
         o.out_for_delivery_at,
         COALESCE(o.customer_name, u.name) as customer_name,
@@ -509,8 +505,7 @@ const getAllOrders = async (req, res, next) => {
           'product_name', p.name,
           'seller_id', s.id,
           'seller_name', COALESCE(s.shop_name, s.name),
-          'quantity', oi.quantity,
-          'price', oi.price
+          'quantity', oi.quantity
         )) FILTER (WHERE oi.id IS NOT NULL), '[]') AS items
       FROM orders o
       LEFT JOIN users u ON o.user_id = u.id
@@ -522,14 +517,7 @@ const getAllOrders = async (req, res, next) => {
     `;
     const result = await pool.query(query);
     
-    // Normalize numeric values
-    const orders = result.rows.map(order => ({
-      ...order,
-      total_price: parseFloat(order.total_price),
-      payment_received_amount: parseFloat(order.payment_received_amount || 0)
-    }));
-
-    res.status(200).json(orders);
+    res.status(200).json(result.rows);
   } catch (error) {
     next(error);
   }
@@ -794,18 +782,14 @@ const getAllReturns = async (req, res, next) => {
 const createManualReturn = async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const { order_code, product_uid, quantity, reason, status, platform } = req.body;
+    const { order_code, product_uid, quantity, reason, platform } = req.body;
     const parsedQuantity = Number(quantity || 1);
-    const returnStatus = status || 'requested';
+    const returnStatus = 'received';
     const cleanPlatform = String(platform || '').trim();
-    const restockStatuses = ['approved', 'received', 'refunded'];
+    const restockStatuses = ['received', 'refunded'];
 
     if (!order_code || !product_uid || !cleanPlatform || !Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
       return res.status(400).json({ error: 'Platform, order code, product unique ID, and quantity are required' });
-    }
-
-    if (!['requested', ...restockStatuses].includes(returnStatus)) {
-      return res.status(400).json({ error: 'Invalid return status' });
     }
 
     await client.query('BEGIN');
