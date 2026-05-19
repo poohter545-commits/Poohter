@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "db:init": "node scripts/initProductionDb.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check server.js && node --check config/db.js && node --check routes/api.js && node --check routes/sellerRoutes.js && node --check routes/adminRoutes.js && node --check controllers/authController.js && node --check controllers/sellerController.js && node --check controllers/adminController.js && node --check utils/emailOtp.js"
   },
   "keywords": [],
   "author": "",

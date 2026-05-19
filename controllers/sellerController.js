@@ -15,6 +15,8 @@ const generateToken = (seller) => {
   );
 };
 
+const sellerApprovalPendingMessage = 'Waiting for admin approval. Your seller application was submitted successfully and is still under review. You can log in after admin approves your account.';
+
 const ensureProductMetadataColumns = async (clientOrPool = pool) => {
   await clientOrPool.query(`
     ALTER TABLE products
@@ -193,7 +195,7 @@ const verifySellerRegistration = async (req, res, next) => {
     const result = await pool.query(query, values);
 
     res.status(201).json({ 
-      message: 'Email verified. Seller registration submitted successfully. Your account is currently pending approval.',
+      message: 'Email verified. Seller registration submitted successfully. Waiting for admin approval before login.',
       seller: result.rows[0],
       requiresApproval: true
     });
@@ -214,7 +216,9 @@ const login = async (req, res, next) => {
 
     if (seller.status !== 'approved') {
       return res.status(403).json({
-        error: `Your seller account is ${seller.status || 'pending'}. Admin approval is required before login.`
+        error: sellerApprovalPendingMessage,
+        status: seller.status || 'pending',
+        requiresApproval: true
       });
     }
 
