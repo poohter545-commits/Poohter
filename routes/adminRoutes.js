@@ -6,13 +6,14 @@ const adminController = require('../controllers/adminController');
 const wholesaleController = require('../controllers/wholesaleController');
 const authMiddleware = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/roles');
+const { ensureUploadDir } = require('../utils/uploads');
 
 const productMediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'product_video') {
-      cb(null, 'uploads/products/videos/');
+      cb(null, ensureUploadDir('products/videos'));
     } else {
-      cb(null, 'uploads/products/images/');
+      cb(null, ensureUploadDir('products/images'));
     }
   },
   filename: (req, file, cb) => {

@@ -1,5 +1,10 @@
 const pool = require('../config/db');
 const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
+const {
+  DEFAULT_DELIVERY_CHARGE,
+  DEFAULT_PACKING_MATERIAL_COST,
+  ensureOrderChargeColumns,
+} = require('../utils/orderCharges');
 
 const getBuyerSnapshot = async (client, buyerId) => {
   const result = await client.query(
@@ -30,6 +35,7 @@ const createOrder = async (req, res, next) => {
     }
 
     await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
 
     // 1. Fetch all products in one query to avoid N+1 overhead
     const uniqueProductIds = [...new Set(items.map(i => i.product_id))];
@@ -101,7 +107,17 @@ const createOrder = async (req, res, next) => {
     });
 
     // 5. Update the order with the final calculated total_price
-    await client.query('UPDATE orders SET total_price = $1 WHERE id = $2', [totalOrderPrice, orderId]);
+    const deliveryCharge = DEFAULT_DELIVERY_CHARGE;
+    const packingMaterialCost = DEFAULT_PACKING_MATERIAL_COST;
+    const finalTotal = totalOrderPrice + deliveryCharge;
+    await client.query(
+      `UPDATE orders
+       SET total_price = $1,
+           delivery_charge = $2,
+           packing_material_cost = $3
+       WHERE id = $4`,
+      [finalTotal, deliveryCharge, packingMaterialCost, orderId]
+    );
 
     await client.query('COMMIT');
 
@@ -110,7 +126,9 @@ const createOrder = async (req, res, next) => {
       order: {
         id: orderId,
         order_code: orderResult.rows[0].order_code,
-        total_price: totalOrderPrice,
+        total_price: finalTotal,
+        delivery_charge: deliveryCharge,
+        packing_material_cost: packingMaterialCost,
         created_at: orderResult.rows[0].created_at,
         items: processedItems
       },
@@ -134,6 +152,8 @@ const getOrders = async (req, res, next) => {
     const buyerId = req.user?.id;
     if (!buyerId) return res.status(401).json({ error: 'Authentication required' });
 
+    await ensureOrderChargeColumns(pool);
+
     const result = await pool.query(
       `SELECT 
          o.id, 
@@ -142,7 +162,9 @@ const getOrders = async (req, res, next) => {
          o.source,
          o.platform,
          o.external_order_ref,
-         o.total_price, 
+         o.total_price,
+         o.delivery_charge,
+         o.packing_material_cost,
          o.created_at,
          COALESCE(json_agg(json_build_object(
            'product_id', p.id, -- Product ID from the products table
@@ -167,6 +189,8 @@ const getOrders = async (req, res, next) => {
       platform: order.platform,
       external_order_ref: order.external_order_ref,
       total_price: Number(order.total_price),
+      delivery_charge: Number(order.delivery_charge || 0),
+      packing_material_cost: Number(order.packing_material_cost || 0),
       created_at: order.created_at,
       items: (order.items || []).map(item => ({ // Ensure items is an array, even if empty
         product_id: item.product_id,
@@ -188,6 +212,7 @@ const checkout = async (req, res, next) => {
     const userId = req.user.id;
 
     await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
 
     // 1. Get all cart items for logged-in user joined with products for fresh prices
     const cartItemsResult = await client.query(
@@ -226,10 +251,13 @@ const checkout = async (req, res, next) => {
     }
 
     // 4. Calculate total price from DB prices (never trust frontend prices)
-    let total_price = 0;
+    let subtotal = 0;
     cartItems.forEach(item => {
-      total_price += Number(item.price) * item.quantity;
+      subtotal += Number(item.price) * item.quantity;
     });
+    const deliveryCharge = DEFAULT_DELIVERY_CHARGE;
+    const packingMaterialCost = DEFAULT_PACKING_MATERIAL_COST;
+    const total_price = subtotal + deliveryCharge;
 
     // 5. Create a new order with a public code for scanning or manual lookup.
     const orderCode = await createUniqueOrderCode(client);
@@ -237,10 +265,21 @@ const checkout = async (req, res, next) => {
     const orderResult = await client.query(
       `INSERT INTO orders (
         user_id, total_price, order_code, source, status,
-        customer_name, customer_email, customer_phone, customer_address
-       ) VALUES ($1, $2, $3, 'poohter', 'pending', $4, $5, $6, $7)
+        customer_name, customer_email, customer_phone, customer_address,
+        delivery_charge, packing_material_cost
+       ) VALUES ($1, $2, $3, 'poohter', 'pending', $4, $5, $6, $7, $8, $9)
        RETURNING id, order_code`,
-      [userId, total_price, orderCode, buyer.name || null, buyer.email || null, buyer.phone || null, buyer.address || null]
+      [
+        userId,
+        total_price,
+        orderCode,
+        buyer.name || null,
+        buyer.email || null,
+        buyer.phone || null,
+        buyer.address || null,
+        deliveryCharge,
+        packingMaterialCost
+      ]
     );
     const order_id = orderResult.rows[0].id;
 
@@ -285,6 +324,8 @@ const checkout = async (req, res, next) => {
       message: 'Order placed successfully',
       order_id,
       total_price,
+      delivery_charge: deliveryCharge,
+      packing_material_cost: packingMaterialCost,
       order_code: orderResult.rows[0].order_code
     });
   } catch (error) {

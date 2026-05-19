@@ -3,6 +3,12 @@ const jwt = require('jsonwebtoken');
 const { createUniqueOrderCode } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
+const { publicUploadPath } = require('../utils/uploads');
+const {
+  DEFAULT_DELIVERY_CHARGE,
+  DEFAULT_PACKING_MATERIAL_COST,
+  ensureOrderChargeColumns,
+} = require('../utils/orderCharges');
 
 const generateAdminToken = () => jwt.sign(
   { id: 'admin', email: 'admin@poohter.local', role: 'admin' },
@@ -26,6 +32,7 @@ const ensureSellerReviewColumns = async () => {
 };
 
 const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
+  await ensureOrderChargeColumns(clientOrPool);
   await clientOrPool.query(`
     ALTER TABLE orders
       ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'pending',
@@ -86,6 +93,26 @@ const ensureProductWorkflowColumns = async () => {
       file_path TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT NOW()
     )
+  `);
+  await ensureSalesPlatformsTable(pool);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_platform_pricing (
+      id SERIAL PRIMARY KEY,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      platform_id INTEGER NOT NULL REFERENCES sales_platforms(id) ON DELETE CASCADE,
+      platform_selling_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+      expected_receivable NUMERIC(12,2) NOT NULL DEFAULT 0,
+      delivery_charge NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_DELIVERY_CHARGE},
+      packing_material_cost NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_PACKING_MATERIAL_COST},
+      note TEXT,
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(product_id, platform_id)
+    )
+  `);
+  await pool.query(`
+    ALTER TABLE product_platform_pricing
+      ADD COLUMN IF NOT EXISTS delivery_charge NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_DELIVERY_CHARGE},
+      ADD COLUMN IF NOT EXISTS packing_material_cost NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_PACKING_MATERIAL_COST}
   `);
   await pool.query(`
     DO $$
@@ -287,12 +314,13 @@ const getAllProducts = async (req, res, next) => {
     const result = await pool.query(
       `SELECT p.id, p.product_uid, p.receipt_code, p.name, p.name_urdu, p.price, p.admin_price, p.description, p.image_url, p.created_at,
         p.expected_stock, p.admin_media_required,
-        p.status, p.rejection_reason, p.warehouse_received_at, p.live_at, p.seller_id,
+        p.status, p.rejection_reason, p.warehouse_received_at, p.live_at, p.topteam_priced_at, p.seller_id,
         s.shop_name, s.name AS seller_name, s.cnic_number AS public_seller_id,
         COALESCE(i.stock_quantity, 0) AS stock_quantity,
         COALESCE(media.image_count, 0) AS image_count,
         COALESCE(media.video_count, 0) AS video_count,
-        COALESCE(files.media_files, '[]'::json) AS media_files
+        COALESCE(files.media_files, '[]'::json) AS media_files,
+        COALESCE(platforms.platform_prices, '[]'::json) AS platform_prices
        FROM products p
        LEFT JOIN sellers s ON p.seller_id = s.id
        LEFT JOIN inventory i ON p.id = i.product_id
@@ -309,6 +337,25 @@ const getAllProducts = async (req, res, next) => {
          FROM product_media
          GROUP BY product_id
        ) files ON p.id = files.product_id
+       LEFT JOIN (
+         SELECT
+          ppp.product_id,
+          json_agg(json_build_object(
+            'id', ppp.id,
+            'platform_id', sp.id,
+            'platform_name', sp.name,
+            'platform_code', sp.code,
+            'platform_selling_price', ppp.platform_selling_price,
+            'expected_receivable', ppp.expected_receivable,
+            'delivery_charge', ppp.delivery_charge,
+            'packing_material_cost', ppp.packing_material_cost,
+            'note', ppp.note,
+            'updated_at', ppp.updated_at
+          ) ORDER BY ppp.updated_at DESC, sp.name) AS platform_prices
+         FROM product_platform_pricing ppp
+         JOIN sales_platforms sp ON ppp.platform_id = sp.id
+         GROUP BY ppp.product_id
+       ) platforms ON p.id = platforms.product_id
        ORDER BY p.created_at DESC`
     );
 
@@ -317,6 +364,13 @@ const getAllProducts = async (req, res, next) => {
       price: Number(product.price),
       admin_price: Number(product.admin_price || product.price || 0),
       stock_quantity: Number(product.stock_quantity || 0),
+      platform_prices: Array.isArray(product.platform_prices) ? product.platform_prices.map((plan) => ({
+        ...plan,
+        platform_selling_price: Number(plan.platform_selling_price || 0),
+        expected_receivable: Number(plan.expected_receivable || 0),
+        delivery_charge: Number(plan.delivery_charge || 0),
+        packing_material_cost: Number(plan.packing_material_cost || 0),
+      })) : [],
       status: product.status || 'pending'
     })));
   } catch (error) {
@@ -380,10 +434,15 @@ const finalizeWarehouseProduct = async (req, res, next) => {
     await client.query('BEGIN');
     await ensureProductWorkflowColumns();
 
-    const existing = await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [id]);
+    const existing = await client.query('SELECT id, price, admin_price FROM products WHERE id = $1 FOR UPDATE', [id]);
     if (existing.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Product not found' });
+    }
+    const sellerSubmittedPrice = Number(existing.rows[0].price || existing.rows[0].admin_price || 0);
+    if (parsedPrice > sellerSubmittedPrice + 0.01) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Admin price cannot be higher than the seller submitted price' });
     }
 
     const mediaQueries = [];
@@ -391,14 +450,14 @@ const finalizeWarehouseProduct = async (req, res, next) => {
       req.files['product_images'].forEach(file => {
         mediaQueries.push(client.query(
           'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-          [id, 'image', file.path]
+          [id, 'image', publicUploadPath(file)]
         ));
       });
     }
     if (req.files && req.files['product_video']) {
       mediaQueries.push(client.query(
         'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-        [id, 'video', req.files['product_video'][0].path]
+        [id, 'video', publicUploadPath(req.files['product_video'][0])]
       ));
     }
     await Promise.all(mediaQueries);
@@ -430,7 +489,6 @@ const finalizeWarehouseProduct = async (req, res, next) => {
        SET name = $1,
            name_urdu = $2,
            description = $3,
-           price = $4,
            admin_price = $4,
            stock = $5,
            status = 'topteam_pending',
@@ -485,6 +543,7 @@ const updateProductStock = async (req, res, next) => {
 
 const getAllOrders = async (req, res, next) => {
   try {
+    await ensureOrderPaymentColumns(pool);
     const query = `
       SELECT 
         o.id, 
@@ -493,6 +552,10 @@ const getAllOrders = async (req, res, next) => {
         o.platform,
         o.external_order_ref,
         o.status, 
+        o.total_price,
+        o.delivery_charge,
+        o.packing_material_cost,
+        o.payment_status,
         o.created_at,
         o.out_for_delivery_at,
         COALESCE(o.customer_name, u.name) as customer_name,
@@ -645,6 +708,7 @@ const createManualOrder = async (req, res, next) => {
     }
 
     await client.query('BEGIN');
+    await ensureOrderPaymentColumns(client);
     await ensureSalesPlatformsTable(client);
 
     const platformResult = await client.query(
@@ -703,12 +767,17 @@ const createManualOrder = async (req, res, next) => {
       orderItems.push({ productId: product.id, quantity, price });
     }
 
+    const deliveryCharge = DEFAULT_DELIVERY_CHARGE;
+    const packingMaterialCost = DEFAULT_PACKING_MATERIAL_COST;
+    total += deliveryCharge;
+
     const orderCode = await createUniqueOrderCode(client);
     const orderResult = await client.query(
       `INSERT INTO orders (
         user_id, total_price, status, order_code, source, platform, external_order_ref,
-        customer_name, customer_email, customer_phone, customer_address
-       ) VALUES ($1, $2, 'accepted', $3, 'manual', $4, $5, $6, $7, $8, $9)
+        customer_name, customer_email, customer_phone, customer_address,
+        delivery_charge, packing_material_cost
+       ) VALUES ($1, $2, 'accepted', $3, 'manual', $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         user_id || null,
@@ -719,7 +788,9 @@ const createManualOrder = async (req, res, next) => {
         customer.name,
         customer.email,
         customer.phone,
-        customer.address
+        customer.address,
+        deliveryCharge,
+        packingMaterialCost
       ]
     );
     const order = orderResult.rows[0];

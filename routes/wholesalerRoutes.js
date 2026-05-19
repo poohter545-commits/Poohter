@@ -4,13 +4,14 @@ const path = require('path');
 const router = express.Router();
 const wholesaleController = require('../controllers/wholesaleController');
 const authMiddleware = require('../middleware/authMiddleware');
+const { ensureUploadDir } = require('../utils/uploads');
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'product_images') {
-      cb(null, 'uploads/wholesale/products/');
+      cb(null, ensureUploadDir('wholesale/products'));
     } else {
-      cb(null, 'uploads/wholesalers/cnic/');
+      cb(null, ensureUploadDir('wholesalers/cnic'));
     }
   },
   filename: (req, file, cb) => {

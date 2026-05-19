@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { getPayoutSummary } = require('../utils/sellerPayouts');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
+const { publicUploadPath } = require('../utils/uploads');
 
 /**
  * Helper to generate JWT for Sellers
@@ -74,8 +75,8 @@ const register = async (req, res, next) => {
     } = req.body;
 
     // Get file paths from multer
-    const cnic_front = req.files && req.files['cnic_front'] ? req.files['cnic_front'][0].path : null;
-    const cnic_back = req.files && req.files['cnic_back'] ? req.files['cnic_back'][0].path : null;
+    const cnic_front = publicUploadPath(req.files?.cnic_front?.[0]);
+    const cnic_back = publicUploadPath(req.files?.cnic_back?.[0]);
 
     // Server-side validation for mandatory fields
     const requiredFields = [
@@ -295,14 +296,14 @@ const createProduct = async (req, res, next) => {
       req.files['product_images'].forEach(file => {
         mediaQueries.push(client.query(
           'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-          [product.id, 'image', file.path]
+          [product.id, 'image', publicUploadPath(file)]
         ));
       });
     }
     if (req.files && req.files['product_video']) {
       mediaQueries.push(client.query(
         'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-        [product.id, 'video', req.files['product_video'][0].path]
+        [product.id, 'video', publicUploadPath(req.files['product_video'][0])]
       ));
     }
     await Promise.all(mediaQueries);

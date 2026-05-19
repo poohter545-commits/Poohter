@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
+const { publicUploadPath } = require('../utils/uploads');
 const {
   createCode,
   ensureWholesaleTables,
@@ -98,8 +99,8 @@ const registerWholesaler = async (req, res, next) => {
         warehouse_address: textValue(warehouse_address) || textValue(city),
         city: textValue(city),
         cnic_number: textValue(cnic_number),
-        cnic_front: req.files?.cnic_front?.[0]?.path || null,
-        cnic_back: req.files?.cnic_back?.[0]?.path || null,
+        cnic_front: publicUploadPath(req.files?.cnic_front?.[0]),
+        cnic_back: publicUploadPath(req.files?.cnic_back?.[0]),
         bank_name: textValue(bank_name),
         account_title: textValue(account_title),
         account_number: textValue(account_number),
@@ -259,7 +260,7 @@ const createWholesalerProduct = async (req, res, next) => {
         wholesalePrice,
         minOrder,
         stock,
-        images[0]?.path || null,
+        publicUploadPath(images[0]),
       ]
     );
 
@@ -268,7 +269,7 @@ const createWholesalerProduct = async (req, res, next) => {
     for (const image of images) {
       await client.query(
         'INSERT INTO wholesale_product_media (wholesale_product_id, file_path) VALUES ($1, $2)',
-        [product.id, image.path]
+        [product.id, publicUploadPath(image)]
       );
     }
     const update = await client.query(

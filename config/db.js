@@ -3,13 +3,15 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+const shouldUseSsl = (connectionString) => (
+  process.env.NODE_ENV === 'production'
+  || /supabase\.com/i.test(connectionString || '')
+);
+
 const poolConfig = process.env.DATABASE_URL
   ? {
       connectionString: process.env.DATABASE_URL,
-      ssl:
-        process.env.NODE_ENV === 'production'
-          ? { rejectUnauthorized: false }
-          : undefined,
+      ssl: shouldUseSsl(process.env.DATABASE_URL) ? { rejectUnauthorized: false } : undefined,
     }
   : {
       host: process.env.DB_HOST || 'localhost',

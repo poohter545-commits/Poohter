@@ -1,22 +1,22 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const router = express.Router();
 const sellerController = require('../controllers/sellerController');
 const wholesaleController = require('../controllers/wholesaleController');
 const authMiddleware = require('../middleware/authMiddleware');
 const pool = require('../config/db');
+const { ensureUploadDir } = require('../utils/uploads');
 
 // Multer Storage Configuration for Products
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'product_images') {
-      cb(null, 'uploads/products/images/');
+      cb(null, ensureUploadDir('products/images'));
     } else if (file.fieldname === 'product_video') {
-      cb(null, 'uploads/products/videos/');
+      cb(null, ensureUploadDir('products/videos'));
     } else {
-      cb(null, 'uploads/sellers/cnic/');
+      cb(null, ensureUploadDir('sellers/cnic'));
     }
   },
   filename: (req, file, cb) => {

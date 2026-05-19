@@ -11,6 +11,13 @@ const {
   getSalesPlatforms,
 } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
+const {
+  DEFAULT_DELIVERY_CHARGE,
+  DEFAULT_PACKING_MATERIAL_COST,
+  amountValue: chargeAmountValue,
+  ensureOrderChargeColumns,
+  getOrderItemsSubtotal,
+} = require('../utils/orderCharges');
 
 const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 
@@ -22,6 +29,10 @@ const generateTopTeamToken = () => jwt.sign(
 
 const numberValue = (value) => Number(value || 0);
 const textValue = (value) => String(value || '').trim();
+const isPoohterPlatform = (platform = {}) => (
+  String(platform.code || '').toLowerCase() === 'poohter-app'
+  || String(platform.name || '').trim().toLowerCase() === 'poohter app'
+);
 
 const amountValue = (value, fallback = 0) => {
   const parsed = Number(value ?? fallback);
@@ -37,6 +48,7 @@ const pctChange = (current, previous) => {
 };
 
 const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
+  await ensureOrderChargeColumns(clientOrPool);
   await clientOrPool.query(`
     ALTER TABLE orders
       ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'pending',
@@ -121,10 +133,17 @@ const ensureExecutiveTables = async () => {
       platform_id INTEGER NOT NULL REFERENCES sales_platforms(id) ON DELETE CASCADE,
       platform_selling_price NUMERIC(12,2) NOT NULL DEFAULT 0,
       expected_receivable NUMERIC(12,2) NOT NULL DEFAULT 0,
+      delivery_charge NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_DELIVERY_CHARGE},
+      packing_material_cost NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_PACKING_MATERIAL_COST},
       note TEXT,
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(product_id, platform_id)
     )
+  `);
+  await pool.query(`
+    ALTER TABLE product_platform_pricing
+      ADD COLUMN IF NOT EXISTS delivery_charge NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_DELIVERY_CHARGE},
+      ADD COLUMN IF NOT EXISTS packing_material_cost NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_PACKING_MATERIAL_COST}
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS order_finance (
@@ -350,17 +369,12 @@ const getOverview = async (req, res, next) => {
       getPayoutSummary(pool, null, PROFIT_RATE),
       pool.query(`
         WITH product_costs AS (
-          SELECT COALESCE(SUM(oi.quantity * pf.unit_cost), 0) AS product_cost
-          FROM order_items oi
-          JOIN orders o ON oi.order_id = o.id
-          JOIN product_finance pf ON pf.product_id = oi.product_id
-          WHERE o.status != 'cancelled'
+          SELECT 0::numeric AS product_cost
         ),
         order_costs AS (
-          SELECT COALESCE(SUM(
-            delivery_cost + return_shipping_cost + packaging_cost + payment_fee + platform_fee + damage_adjustment
-          ), 0) AS operational_cost
-          FROM order_finance
+          SELECT COALESCE(SUM(packing_material_cost), 0) AS operational_cost
+          FROM orders
+          WHERE status != 'cancelled'
         ),
         marketing AS (
           SELECT
@@ -371,9 +385,9 @@ const getOverview = async (req, res, next) => {
         coverage AS (
           SELECT
             (SELECT COUNT(*) FROM products WHERE COALESCE(status, 'pending') IN ('live', 'active', 'warehouse_received', 'topteam_pending')) AS active_products,
-            (SELECT COUNT(*) FROM product_finance) AS costed_products,
+            0 AS costed_products,
             (SELECT COUNT(*) FROM orders WHERE status != 'cancelled') AS active_orders,
-            (SELECT COUNT(*) FROM order_finance) AS costed_orders
+            (SELECT COUNT(*) FROM orders WHERE status != 'cancelled' AND packing_material_cost IS NOT NULL) AS costed_orders
         )
         SELECT *
         FROM product_costs, order_costs, marketing, coverage
@@ -496,12 +510,14 @@ const getOverview = async (req, res, next) => {
           ppp.id, ppp.product_id, p.product_uid, p.name,
           COALESCE(s.shop_name, s.name, 'Poohter') AS seller_name,
           sp.id AS platform_id, sp.name AS platform_name,
-          p.price AS admin_price,
+          COALESCE(p.admin_price, p.price, 0) AS admin_price,
           COALESCE(pf.unit_cost, 0) AS unit_cost,
           ppp.platform_selling_price,
           ppp.expected_receivable,
-          ppp.expected_receivable - COALESCE(pf.unit_cost, 0) AS expected_gross_profit,
-          ppp.expected_receivable - p.price AS receivable_vs_admin_price,
+          ppp.delivery_charge,
+          ppp.packing_material_cost,
+          ppp.expected_receivable - COALESCE(p.admin_price, p.price, 0) - COALESCE(ppp.packing_material_cost, 0) AS expected_gross_profit,
+          ppp.expected_receivable - COALESCE(p.admin_price, p.price, 0) AS receivable_vs_admin_price,
           ppp.note,
           ppp.updated_at
         FROM product_platform_pricing ppp
@@ -523,6 +539,7 @@ const getOverview = async (req, res, next) => {
         LEFT JOIN sellers s ON p.seller_id = s.id
         LEFT JOIN inventory i ON i.product_id = p.id AND i.warehouse_id = 1
         WHERE COALESCE(p.status, 'pending') = 'topteam_pending'
+          AND p.topteam_priced_at IS NULL
         ORDER BY p.warehouse_received_at DESC NULLS LAST, p.created_at DESC
         LIMIT 30
       `),
@@ -542,7 +559,8 @@ const getOverview = async (req, res, next) => {
       pool.query(`
         SELECT
           o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
-          o.total_price, o.payment_status, o.payment_received_amount, o.payment_reference,
+          o.total_price, o.delivery_charge, o.packing_material_cost,
+          o.payment_status, o.payment_received_amount, o.payment_reference,
           o.payment_note, o.payment_received_at, o.closed_at, o.created_at,
           CASE
             WHEN o.source = 'manual' THEN COALESCE(NULLIF(o.platform, ''), 'Manual outside platform')
@@ -573,7 +591,8 @@ const getOverview = async (req, res, next) => {
       pool.query(`
         SELECT
           o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
-          o.total_price, o.payment_status, o.payment_received_amount, o.payment_reference,
+          o.total_price, o.delivery_charge, o.packing_material_cost,
+          o.payment_status, o.payment_received_amount, o.payment_reference,
           o.payment_note, o.payment_received_at, o.closed_at, o.created_at,
           CASE
             WHEN o.source = 'manual' THEN COALESCE(NULLIF(o.platform, ''), 'Manual outside platform')
@@ -617,7 +636,7 @@ const getOverview = async (req, res, next) => {
       assumptions: {
         profit_rate: PROFIT_RATE,
         profit_label: 'Tracked Poohter profit',
-        note: 'Profit becomes more accurate as product costs, order costs, and marketing spend are entered.'
+        note: 'Profit becomes more accurate as seller payouts, packing cost, delivery charge, and marketing spend are kept current.'
       },
       summary: {
         gross_sales: grossSales,
@@ -695,6 +714,8 @@ const getOverview = async (req, res, next) => {
           unit_cost: numberValue(row.unit_cost),
           platform_selling_price: numberValue(row.platform_selling_price),
           expected_receivable: numberValue(row.expected_receivable),
+          delivery_charge: numberValue(row.delivery_charge),
+          packing_material_cost: numberValue(row.packing_material_cost),
           expected_gross_profit: numberValue(row.expected_gross_profit),
           receivable_vs_admin_price: numberValue(row.receivable_vs_admin_price)
         })),
@@ -756,6 +777,8 @@ const getOverview = async (req, res, next) => {
         payment_queue: paymentQueue.rows.map(row => ({
           ...row,
           total_price: numberValue(row.total_price),
+          delivery_charge: numberValue(row.delivery_charge),
+          packing_material_cost: numberValue(row.packing_material_cost),
           payment_received_amount: numberValue(row.payment_received_amount),
           items: Array.isArray(row.items) ? row.items.map(item => ({
             ...item,
@@ -766,6 +789,8 @@ const getOverview = async (req, res, next) => {
         closed_payment_orders: closedPaymentOrders.rows.map(row => ({
           ...row,
           total_price: numberValue(row.total_price),
+          delivery_charge: numberValue(row.delivery_charge),
+          packing_material_cost: numberValue(row.packing_material_cost),
           payment_received_amount: numberValue(row.payment_received_amount)
         }))
       },
@@ -802,8 +827,8 @@ const getOverview = async (req, res, next) => {
       },
       payouts,
       required_for_true_profit: [
-        'Keep product unit cost updated for every Poohter-owned SKU',
-        'Record delivery, return shipping, packaging, payment, and platform costs',
+        'Set final platform prices before products go live',
+        'Keep delivery charge and packing material cost current on orders',
         'Enter marketing spend by channel and campaign',
         'Set weekly or monthly sales, order, and profit targets',
         'Review inventory age and stock value every week',
@@ -831,7 +856,7 @@ const recordOrderPayment = async (req, res, next) => {
     await client.query('BEGIN');
 
     const orderResult = await client.query(
-      `SELECT id, order_code, total_price, status
+      `SELECT id, order_code, total_price, delivery_charge, packing_material_cost, status
        FROM orders
        WHERE id = $1
        FOR UPDATE`,
@@ -849,7 +874,22 @@ const recordOrderPayment = async (req, res, next) => {
       return res.status(400).json({ error: 'Cancelled orders cannot be closed as successful' });
     }
 
-    const totalPrice = Number(order.total_price || 0);
+    const requestedDeliveryCharge = req.body.delivery_charge ?? req.body.delivery;
+    const requestedPackingCost = req.body.packing_material_cost ?? req.body.packing_cost;
+    const deliveryCharge = requestedDeliveryCharge === undefined || textValue(requestedDeliveryCharge) === ''
+      ? chargeAmountValue(order.delivery_charge, DEFAULT_DELIVERY_CHARGE)
+      : chargeAmountValue(requestedDeliveryCharge, NaN);
+    const packingMaterialCost = requestedPackingCost === undefined || textValue(requestedPackingCost) === ''
+      ? chargeAmountValue(order.packing_material_cost, DEFAULT_PACKING_MATERIAL_COST)
+      : chargeAmountValue(requestedPackingCost, NaN);
+
+    if (!Number.isFinite(deliveryCharge) || deliveryCharge < 0 || !Number.isFinite(packingMaterialCost) || packingMaterialCost < 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Delivery charge and packing material cost must be non-negative numbers' });
+    }
+
+    const subtotal = await getOrderItemsSubtotal(client, id);
+    const totalPrice = subtotal + deliveryCharge;
     if (receivedAmount < totalPrice - 0.01) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Received payment cannot be less than the order total' });
@@ -863,10 +903,13 @@ const recordOrderPayment = async (req, res, next) => {
            payment_received_at = NOW(),
            payment_reference = $2,
            payment_note = $3,
+           total_price = $4,
+           delivery_charge = $5,
+           packing_material_cost = $6,
            closed_at = NOW()
-       WHERE id = $4
+       WHERE id = $7
        RETURNING *`,
-      [receivedAmount, reference || null, note || null, id]
+      [receivedAmount, reference || null, note || null, totalPrice, deliveryCharge, packingMaterialCost, id]
     );
 
     await client.query(
@@ -1076,8 +1119,7 @@ const saveProductCost = async (req, res, next) => {
       platformPricing = pricingResult.rows[0];
 
       const platform = platformResult.rows[0];
-      const isPoohterBuyerPlatform = platform.code === 'poohter-app' || platform.name.toLowerCase() === 'poohter app';
-      if (isPoohterBuyerPlatform) {
+      if (isPoohterPlatform(platform)) {
         await pool.query(
           `UPDATE products
            SET price = $1,
@@ -1094,6 +1136,153 @@ const saveProductCost = async (req, res, next) => {
     res.json({ product, finance, platform_pricing: platformPricing });
   } catch (error) {
     next(error);
+  }
+};
+
+const submitProductPlatformPlan = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await ensureExecutiveTables();
+    const productId = Number(req.params.id);
+    const platforms = Array.isArray(req.body.platforms) ? req.body.platforms : [];
+    const note = textValue(req.body.note) || 'Top Team platform plan sent to Admin';
+
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return res.status(400).json({ error: 'Valid product ID is required' });
+    }
+
+    if (!platforms.length) {
+      return res.status(400).json({ error: 'Select at least one platform for this product' });
+    }
+
+    await client.query('BEGIN');
+
+    const productResult = await client.query(
+      `SELECT id, name, product_uid, price, admin_price, status
+       FROM products
+       WHERE id = $1
+       FOR UPDATE`,
+      [productId]
+    );
+    const product = productResult.rows[0];
+    if (!product) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const platformIds = [...new Set(platforms.map((item) => Number(item.platform_id)).filter((id) => Number.isInteger(id) && id > 0))];
+    if (!platformIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Select valid sales platforms' });
+    }
+
+    const platformResult = await client.query(
+      `SELECT id, name, code
+       FROM sales_platforms
+       WHERE id = ANY($1::int[])
+         AND active = TRUE`,
+      [platformIds]
+    );
+    if (platformResult.rows.length !== platformIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'One or more selected platforms are inactive or missing' });
+    }
+
+    const platformById = new Map(platformResult.rows.map((platform) => [Number(platform.id), platform]));
+    const savedPlans = [];
+
+    for (const item of platforms) {
+      const platformId = Number(item.platform_id);
+      const platform = platformById.get(platformId);
+      if (!platform) continue;
+
+      const hasRequestedPrice = textValue(item.platform_selling_price) !== '';
+      const requestedPrice = hasRequestedPrice ? amountValue(item.platform_selling_price, NaN) : NaN;
+      const platformSellingPrice = requestedPrice;
+
+      if (!hasRequestedPrice || !Number.isFinite(platformSellingPrice) || platformSellingPrice < 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `${platform.name} needs a valid non-negative selling price` });
+      }
+
+      const expectedReceivable = textValue(item.expected_receivable) === ''
+        ? platformSellingPrice
+        : amountValue(item.expected_receivable, platformSellingPrice);
+      if (!Number.isFinite(expectedReceivable) || expectedReceivable < 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `${platform.name} needs a valid expected receivable` });
+      }
+      const deliveryCharge = textValue(item.delivery_charge) === ''
+        ? DEFAULT_DELIVERY_CHARGE
+        : chargeAmountValue(item.delivery_charge, DEFAULT_DELIVERY_CHARGE);
+      const packingMaterialCost = textValue(item.packing_material_cost) === ''
+        ? DEFAULT_PACKING_MATERIAL_COST
+        : chargeAmountValue(item.packing_material_cost, DEFAULT_PACKING_MATERIAL_COST);
+      if (!Number.isFinite(deliveryCharge) || deliveryCharge < 0 || !Number.isFinite(packingMaterialCost) || packingMaterialCost < 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `${platform.name} needs valid delivery and packing amounts` });
+      }
+
+      const pricingResult = await client.query(
+        `INSERT INTO product_platform_pricing (
+          product_id, platform_id, platform_selling_price, expected_receivable,
+          delivery_charge, packing_material_cost, note, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (product_id, platform_id)
+         DO UPDATE SET
+           platform_selling_price = EXCLUDED.platform_selling_price,
+           expected_receivable = EXCLUDED.expected_receivable,
+           delivery_charge = EXCLUDED.delivery_charge,
+           packing_material_cost = EXCLUDED.packing_material_cost,
+           note = EXCLUDED.note,
+           updated_at = NOW()
+         RETURNING *`,
+        [
+          product.id,
+          platformId,
+          platformSellingPrice,
+          expectedReceivable,
+          deliveryCharge,
+          packingMaterialCost,
+          textValue(item.note) || note
+        ]
+      );
+
+      savedPlans.push({
+        ...pricingResult.rows[0],
+        platform_name: platform.name,
+        platform_code: platform.code,
+      });
+    }
+
+    const poohterPlan = savedPlans.find((plan) => isPoohterPlatform({ name: plan.platform_name, code: plan.platform_code }));
+    if (poohterPlan) {
+      await client.query(
+        `UPDATE products
+         SET price = $1,
+             admin_price = COALESCE(admin_price, $2),
+             status = 'live',
+             live_at = COALESCE(live_at, NOW()),
+             topteam_priced_at = NOW()
+         WHERE id = $3`,
+        [poohterPlan.platform_selling_price, product.admin_price || product.price || 0, product.id]
+      );
+    } else {
+      await client.query(
+        `UPDATE products
+         SET topteam_priced_at = NOW()
+         WHERE id = $1`,
+        [product.id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ product, platform_plan: savedPlans });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -1220,6 +1409,7 @@ module.exports = {
   banWholesaler,
   saveSalesPlatform,
   saveProductCost,
+  submitProductPlatformPlan,
   saveOrderCost,
   addMarketingSpend,
   addBusinessTarget
