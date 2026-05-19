@@ -55,6 +55,18 @@ const hashOtp = ({ email, purpose, accountType, otp }) => (
 
 const generateOtp = () => String(crypto.randomInt(100000, 1000000));
 
+const readOtpPayload = (payload) => {
+  if (!payload) return null;
+  if (typeof payload === 'object') return payload;
+  if (typeof payload !== 'string') return null;
+
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+};
+
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({
   '&': '&amp;',
   '<': '&lt;',
@@ -210,7 +222,7 @@ const resendEmailOtp = async ({ email, purpose, accountType = 'buyer' }) => {
   }
 
   const code = generateOtp();
-  const payload = otpRow.payload || null;
+  const payload = readOtpPayload(otpRow.payload);
   const displayName = payload?.name || payload?.shop_name || '';
 
   await sendEmail({
@@ -275,7 +287,7 @@ const verifyEmailOtp = async ({ email, purpose, accountType = 'buyer', otp }) =>
   }
 
   await pool.query('UPDATE email_otps SET consumed_at = NOW() WHERE id = $1', [otpRow.id]);
-  return otpRow.payload || {};
+  return readOtpPayload(otpRow.payload) || {};
 };
 
 module.exports = {

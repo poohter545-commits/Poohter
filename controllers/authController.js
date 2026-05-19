@@ -108,6 +108,19 @@ const verifySignup = async (req, res, next) => {
       otp,
     });
 
+    if (
+      !pendingUser
+      || pendingUser.email !== cleanEmail
+      || !pendingUser.name
+      || !pendingUser.password_hash
+      || !pendingUser.phone
+      || !pendingUser.address
+    ) {
+      return res.status(400).json({
+        error: 'Signup verification data expired or is incomplete. Please create the account again.',
+      });
+    }
+
     const userExists = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ error: 'User already exists' });
