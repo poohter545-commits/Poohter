@@ -41,10 +41,6 @@ const uploadWholesaleProductImages = (req, res, next) => {
     if (err) {
       return res.status(400).json({ error: err.message });
     }
-    const images = req.files?.product_images || [];
-    if (images.length < 5) {
-      return res.status(400).json({ error: 'Minimum 5 photos of wholesale product are required' });
-    }
     next();
   });
 };

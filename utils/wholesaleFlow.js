@@ -182,6 +182,13 @@ const ensureWholesaleTables = async (clientOrPool) => {
     )
   `);
   await clientOrPool.query(`
+    ALTER TABLE wholesale_products
+      ADD COLUMN IF NOT EXISTS admin_description_note TEXT,
+      ADD COLUMN IF NOT EXISTS admin_price_note TEXT,
+      ADD COLUMN IF NOT EXISTS admin_reviewed_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT
+  `);
+  await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS wholesale_product_media (
       id SERIAL PRIMARY KEY,
       wholesale_product_id INTEGER NOT NULL REFERENCES wholesale_products(id) ON DELETE CASCADE,

@@ -50,6 +50,12 @@ router.get('/platforms', adminController.getPlatforms);
 router.patch('/sellers/:id/status', adminController.updateSellerStatus);
 router.patch('/wholesalers/:id/status', wholesaleController.updateAdminWholesalerStatus);
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
+router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
+router.patch(
+  '/wholesale/products/:id/review',
+  uploadProductMedia.fields([{ name: 'product_images', maxCount: 3 }]),
+  wholesaleController.reviewAdminWholesaleProduct
+);
 router.get('/products', adminController.getAllProducts);
 router.patch('/products/:id/status', adminController.updateProductStatus);
 router.patch('/products/:id/stock', adminController.updateProductStock);
