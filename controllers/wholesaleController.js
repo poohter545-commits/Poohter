@@ -225,10 +225,11 @@ const requireApprovedWholesaler = async (wholesalerId) => {
 };
 
 const createWholesalerProduct = async (req, res, next) => {
-  const client = await pool.connect();
+  let client;
   try {
+    await ensureWholesaleTables(pool);
+    client = await pool.connect();
     await client.query('BEGIN');
-    await ensureWholesaleTables(client);
     await requireApprovedWholesaler(req.user.id);
 
     const name = textValue(req.body.name);
@@ -287,10 +288,10 @@ const createWholesalerProduct = async (req, res, next) => {
       message: 'Wholesale product submitted for admin review.',
     });
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => null);
+    if (client) await client.query('ROLLBACK').catch(() => null);
     next(error.status ? error : error);
   } finally {
-    client.release();
+    if (client) client.release();
   }
 };
 

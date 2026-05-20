@@ -5,6 +5,9 @@ const textValue = (value) => String(value || '').trim();
 
 const createCode = (prefix) => `${prefix}-${Date.now().toString().slice(-8)}-${Math.floor(Math.random() * 900 + 100)}`;
 
+let wholesaleSchemaReady = false;
+let wholesaleSchemaPromise = null;
+
 const ensureProductWorkflowColumns = async (clientOrPool) => {
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS sellers (
@@ -125,7 +128,7 @@ const ensureProductWorkflowColumns = async (clientOrPool) => {
   `);
 };
 
-const ensureWholesaleTables = async (clientOrPool) => {
+const runWholesaleTableEnsure = async (clientOrPool) => {
   await ensureProductWorkflowColumns(clientOrPool);
 
   await clientOrPool.query(`
@@ -238,6 +241,28 @@ const ensureWholesaleTables = async (clientOrPool) => {
   if (process.env.SEED_DEMO_DATA === 'true') {
     await seedDummyWholesaler(clientOrPool);
   }
+};
+
+const ensureWholesaleTables = async (clientOrPool) => {
+  if (process.env.NODE_ENV !== 'test' && wholesaleSchemaReady) return;
+  if (process.env.NODE_ENV !== 'test' && wholesaleSchemaPromise) return wholesaleSchemaPromise;
+
+  const run = runWholesaleTableEnsure(clientOrPool).then(() => {
+    wholesaleSchemaReady = true;
+  });
+
+  if (process.env.NODE_ENV === 'test') return run;
+
+  wholesaleSchemaPromise = run
+    .catch((error) => {
+      wholesaleSchemaReady = false;
+      throw error;
+    })
+    .finally(() => {
+      if (!wholesaleSchemaReady) wholesaleSchemaPromise = null;
+    });
+
+  return wholesaleSchemaPromise;
 };
 
 const seedDummyWholesaler = async (clientOrPool) => {

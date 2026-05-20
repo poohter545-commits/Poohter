@@ -13,11 +13,14 @@ const positiveNumber = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const statementTimeoutMs = positiveNumber(process.env.DB_STATEMENT_TIMEOUT_MS, 25000);
+const queryTimeoutMs = positiveNumber(process.env.DB_QUERY_TIMEOUT_MS, statementTimeoutMs + 5000);
+
 const timeoutConfig = {
   connectionTimeoutMillis: positiveNumber(process.env.DB_CONNECTION_TIMEOUT_MS, 10000),
   idleTimeoutMillis: positiveNumber(process.env.DB_IDLE_TIMEOUT_MS, 30000),
-  query_timeout: positiveNumber(process.env.DB_QUERY_TIMEOUT_MS, 15000),
-  statement_timeout: positiveNumber(process.env.DB_STATEMENT_TIMEOUT_MS, 15000),
+  query_timeout: queryTimeoutMs,
+  statement_timeout: statementTimeoutMs,
   idle_in_transaction_session_timeout: positiveNumber(process.env.DB_IDLE_TRANSACTION_TIMEOUT_MS, 15000),
   keepAlive: true,
   max: positiveNumber(process.env.DB_POOL_MAX, 10),
