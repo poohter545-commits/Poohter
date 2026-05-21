@@ -21,7 +21,6 @@ const MIN_WHOLESALE_PRODUCT_IMAGES = 3;
 
 const wholesaleProductLiveWhere = `
   COALESCE(NULLIF(TRIM(wp.description), ''), '') <> ''
-  AND wp.admin_reviewed_at IS NOT NULL
   AND (
     SELECT COUNT(DISTINCT media_path)
     FROM (
