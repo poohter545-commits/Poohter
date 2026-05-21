@@ -876,13 +876,28 @@ const deleteAdminWholesaleProduct = async (req, res, next) => {
 
     const productKey = textValue(req.params.id);
     const confirmationName = textValue(req.body?.confirmation_name || req.body?.name);
-    const currentResult = await client.query(
+    let currentResult = await client.query(
       `SELECT id, product_uid, name
        FROM wholesale_products
        WHERE id::text = $1 OR product_uid = $1
        FOR UPDATE`,
       [productKey]
     );
+    if (!currentResult.rows.length && confirmationName) {
+      currentResult = await client.query(
+        `SELECT id, product_uid, name
+         FROM wholesale_products
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+         FOR UPDATE`,
+        [confirmationName]
+      );
+      if (currentResult.rows.length > 1) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'More than one wholesale product has this name. Refresh the admin panel and delete using the product ID.',
+        });
+      }
+    }
     const current = currentResult.rows[0];
     if (!current) {
       await client.query('ROLLBACK');
