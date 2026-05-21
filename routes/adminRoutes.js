@@ -12,6 +12,8 @@ const productMediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'product_video') {
       cb(null, ensureUploadDir('products/videos'));
+    } else if (file.fieldname === 'product_images' && req.originalUrl.includes('/wholesale/')) {
+      cb(null, ensureUploadDir('wholesale/products'));
     } else {
       cb(null, ensureUploadDir('products/images'));
     }
@@ -52,10 +54,16 @@ router.patch('/wholesalers/:id/status', wholesaleController.updateAdminWholesale
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
 router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
 router.patch(
+  '/wholesale/products/:id/images',
+  uploadProductMedia.fields([{ name: 'product_images', maxCount: 3 }]),
+  wholesaleController.uploadAdminWholesaleProductImages
+);
+router.patch(
   '/wholesale/products/:id/review',
   uploadProductMedia.fields([{ name: 'product_images', maxCount: 3 }]),
   wholesaleController.reviewAdminWholesaleProduct
 );
+router.delete('/wholesale/products/:id', wholesaleController.deleteAdminWholesaleProduct);
 router.get('/products', adminController.getAllProducts);
 router.patch('/products/:id/status', adminController.updateProductStatus);
 router.patch('/products/:id/stock', adminController.updateProductStock);
@@ -73,6 +81,7 @@ router.patch('/orders/:id/status', adminController.updateOrderStatus);
 router.get('/returns', adminController.getAllReturns);
 router.post('/returns/manual', adminController.createManualReturn);
 router.get('/wholesale/orders', wholesaleController.getAdminWholesaleOrders);
+router.post('/wholesale/orders/:id/accept', wholesaleController.acceptWholesaleOrderByAdmin);
 router.patch('/wholesale/orders/:id/status', wholesaleController.reviewWholesaleOrderByAdmin);
 
 module.exports = router;

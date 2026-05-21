@@ -17,6 +17,23 @@ const {
 } = require('../utils/wholesaleFlow');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_here';
+const MIN_WHOLESALE_PRODUCT_IMAGES = 3;
+
+const wholesaleProductLiveWhere = `
+  COALESCE(NULLIF(TRIM(wp.description), ''), '') <> ''
+  AND wp.admin_reviewed_at IS NOT NULL
+  AND (
+    SELECT COUNT(DISTINCT media_path)
+    FROM (
+      SELECT wpm.file_path AS media_path
+      FROM wholesale_product_media wpm
+      WHERE wpm.wholesale_product_id = wp.id
+      UNION
+      SELECT wp.image_url AS media_path
+      WHERE COALESCE(wp.image_url, '') <> ''
+    ) wholesale_product_images
+  ) >= ${MIN_WHOLESALE_PRODUCT_IMAGES}
+`;
 
 const generateWholesalerToken = (wholesaler) => jwt.sign(
   { id: wholesaler.id, email: wholesaler.email, role: 'wholesaler' },
@@ -51,6 +68,24 @@ const publicWholesaler = (row) => ({
   approved_at: row.approved_at,
   created_at: row.created_at,
 });
+
+const countWholesaleProductImages = async (clientOrPool, productId) => {
+  const result = await clientOrPool.query(
+    `SELECT
+       wp.image_url,
+       ARRAY_REMOVE(ARRAY_AGG(DISTINCT wpm.file_path), NULL) AS media_files
+     FROM wholesale_products wp
+     LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
+     WHERE wp.id = $1
+     GROUP BY wp.id`,
+    [productId]
+  );
+  const row = result.rows[0];
+  if (!row) return 0;
+  const paths = new Set(Array.isArray(row.media_files) ? row.media_files.filter(Boolean) : []);
+  if (row.image_url) paths.add(row.image_url);
+  return paths.size;
+};
 
 const registerWholesaler = async (req, res, next) => {
   try {
@@ -314,8 +349,10 @@ const getMyWholesaleProducts = async (req, res, next) => {
 };
 
 const updateMyWholesaleProduct = async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    await ensureWholesaleTables(pool);
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
     await requireApprovedWholesaler(req.user.id);
 
     const wholesalePrice = Number(req.body.wholesale_price);
@@ -324,10 +361,37 @@ const updateMyWholesaleProduct = async (req, res, next) => {
     const status = ['active', 'paused'].includes(req.body.status) ? req.body.status : 'active';
 
     if (!Number.isFinite(wholesalePrice) || wholesalePrice <= 0 || !Number.isInteger(minOrder) || minOrder < 25 || !Number.isInteger(stock) || stock < minOrder) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Wholesale price, minimum order of at least 25, and stock at least equal to minimum order are required' });
     }
 
-    const result = await pool.query(
+    const currentResult = await client.query(
+      `SELECT wp.*
+       FROM wholesale_products wp
+       WHERE wp.id = $1 AND wp.wholesaler_id = $2
+       FOR UPDATE`,
+      [req.params.id, req.user.id]
+    );
+    const current = currentResult.rows[0];
+    if (!current) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesale product not found' });
+    }
+
+    if (!['active', 'paused'].includes(current.status)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Admin review is required before this wholesale product can go live.' });
+    }
+
+    if (status === 'active') {
+      const imageCount = await countWholesaleProductImages(client, current.id);
+      if (!current.admin_reviewed_at || !textValue(current.description) || imageCount < MIN_WHOLESALE_PRODUCT_IMAGES) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'A wholesale product needs admin review, a description, and at least 3 images before it can go live.' });
+      }
+    }
+
+    const result = await client.query(
       `UPDATE wholesale_products
        SET wholesale_price = $1,
            min_order_quantity = $2,
@@ -338,10 +402,14 @@ const updateMyWholesaleProduct = async (req, res, next) => {
        RETURNING *`,
       [wholesalePrice, minOrder, stock, status, req.params.id, req.user.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Wholesale product not found' });
+
+    await client.query('COMMIT');
     res.json({ product: normalizeWholesaleProduct(result.rows[0]) });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
     next(error.status ? error : error);
+  } finally {
+    client.release();
   }
 };
 
@@ -361,17 +429,22 @@ const getWholesalerOrders = async (req, res, next) => {
   }
 };
 
-const acceptWholesaleOrder = async (req, res, next) => {
+const acceptWholesaleOrderForActor = async (req, res, next, { admin = false } = {}) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await ensureWholesaleTables(client);
 
+    const orderLookup = textValue(req.params.id);
+    const whereClause = admin
+      ? '(wo.id::text = $1 OR wo.order_code = $1)'
+      : '(wo.id::text = $1 OR wo.order_code = $1) AND wo.wholesaler_id = $2';
+    const params = admin ? [orderLookup] : [orderLookup, req.user.id];
     const orderResult = await client.query(
       `${wholesaleOrderSelect}
-       WHERE wo.id = $1 AND wo.wholesaler_id = $2
+       WHERE ${whereClause}
        FOR UPDATE OF wo`,
-      [req.params.id, req.user.id]
+      params
     );
     const order = orderResult.rows[0];
     if (!order) {
@@ -382,9 +455,10 @@ const acceptWholesaleOrder = async (req, res, next) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Rejected orders cannot be accepted' });
     }
-    if (!['approved_by_admin', 'accepted'].includes(order.status)) {
+    const allowedStatuses = admin ? ['admin_review', 'approved_by_admin', 'accepted'] : ['approved_by_admin', 'accepted'];
+    if (!allowedStatuses.includes(order.status)) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Admin must approve this wholesale order before acceptance' });
+      return res.status(400).json({ error: admin ? 'This wholesale order cannot be accepted by admin in its current status' : 'Admin must approve this wholesale order before acceptance' });
     }
 
     if (!order.linked_product_id && numberValue(order.available_stock) < numberValue(order.quantity)) {
@@ -392,9 +466,8 @@ const acceptWholesaleOrder = async (req, res, next) => {
       return res.status(400).json({ error: 'Available wholesale stock is lower than requested quantity' });
     }
 
-    let linkedProductId = order.linked_product_id;
-    if (!linkedProductId) {
-      linkedProductId = await createSellerProductFromWholesaleOrder(client, normalizeWholesaleOrder(order));
+    const linkedProductId = await createSellerProductFromWholesaleOrder(client, normalizeWholesaleOrder(order));
+    if (!order.linked_product_id) {
       await client.query(
         `UPDATE wholesale_products
          SET available_stock = GREATEST(available_stock - $1, 0),
@@ -404,14 +477,18 @@ const acceptWholesaleOrder = async (req, res, next) => {
       );
     }
 
+    const body = req.body || {};
+    const note = textValue(body.note) || (admin ? 'Admin accepted this wholesale order for the wholesaler.' : null);
     await client.query(
       `UPDATE wholesale_orders
        SET status = 'accepted',
            linked_product_id = $1,
            accepted_at = COALESCE(accepted_at, NOW()),
-           wholesaler_note = COALESCE($2, wholesaler_note)
-       WHERE id = $3`,
-      [linkedProductId, textValue(req.body.note) || null, order.id]
+           wholesaler_note = CASE WHEN $2::boolean THEN wholesaler_note ELSE COALESCE($3, wholesaler_note) END,
+           admin_note = CASE WHEN $2::boolean THEN COALESCE($3, admin_note) ELSE admin_note END,
+           admin_reviewed_at = CASE WHEN $2::boolean THEN COALESCE(admin_reviewed_at, NOW()) ELSE admin_reviewed_at END
+       WHERE id = $4`,
+      [linkedProductId, admin, note, order.id]
     );
 
     await client.query(
@@ -436,6 +513,10 @@ const acceptWholesaleOrder = async (req, res, next) => {
   }
 };
 
+const acceptWholesaleOrder = (req, res, next) => acceptWholesaleOrderForActor(req, res, next);
+
+const acceptWholesaleOrderByAdmin = (req, res, next) => acceptWholesaleOrderForActor(req, res, next, { admin: true });
+
 const rejectWholesaleOrderByWholesaler = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
@@ -448,7 +529,7 @@ const rejectWholesaleOrderByWholesaler = async (req, res, next) => {
          AND wholesaler_id = $3
          AND status = 'approved_by_admin'
        RETURNING *`,
-      [textValue(req.body.note) || 'Wholesaler rejected this request', req.params.id, req.user.id]
+      [textValue(req.body?.note) || 'Wholesaler rejected this request', req.params.id, req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Approved wholesale order not found' });
     res.json({ order: normalizeWholesaleOrder(result.rows[0]) });
@@ -489,6 +570,7 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
        FROM wholesale_products wp
        JOIN wholesalers w ON wp.wholesaler_id = w.id
        WHERE wp.status = 'active'
+         AND ${wholesaleProductLiveWhere}
          AND w.status = 'approved'
          AND wp.available_stock >= wp.min_order_quantity
        ORDER BY wp.created_at DESC`
@@ -518,6 +600,7 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
        JOIN wholesalers w ON wp.wholesaler_id = w.id
        WHERE wp.id = $1
          AND wp.status = 'active'
+         AND ${wholesaleProductLiveWhere}
        LIMIT 1`,
       [productId]
     );
@@ -585,7 +668,13 @@ const getAdminWholesaleProducts = async (req, res, next) => {
         w.phone AS wholesaler_phone,
         w.city AS wholesaler_city,
         w.cnic_number AS wholesaler_cnic_number,
-        COUNT(wpm.id) AS image_count,
+        COUNT(DISTINCT wpm.file_path)
+          + CASE
+              WHEN COALESCE(wp.image_url, '') <> ''
+                AND COUNT(wpm.id) FILTER (WHERE wpm.file_path = wp.image_url) = 0
+              THEN 1
+              ELSE 0
+            END AS image_count,
         COALESCE(
           json_agg(
             json_build_object('id', wpm.id, 'type', 'image', 'file_path', wpm.file_path)
@@ -626,24 +715,111 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const stock = Number.parseInt(req.body.available_stock, 10);
     const images = req.files?.product_images || [];
 
-    if (images.length > 0 && images.length !== 3) {
+    const currentResult = await client.query(
+      'SELECT * FROM wholesale_products WHERE id = $1 FOR UPDATE',
+      [req.params.id]
+    );
+    const current = currentResult.rows[0];
+    if (!current) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Upload exactly 3 product images, or leave images empty for manual detail review.' });
+      return res.status(404).json({ error: 'Wholesale product not found' });
     }
+
+    const finalName = name || current.name;
+    const finalDescription = description || current.description;
+    const finalWholesalePrice = Number.isFinite(wholesalePrice) && wholesalePrice > 0
+      ? wholesalePrice
+      : Number(current.wholesale_price);
+    const finalMinOrder = Number.isInteger(minOrder) && minOrder >= 25
+      ? minOrder
+      : Number(current.min_order_quantity);
+    const finalStock = Number.isInteger(stock) && stock >= 0
+      ? stock
+      : Number(current.available_stock);
+    const finalImageCount = await countWholesaleProductImages(client, current.id) + images.length;
 
     if (status === 'active') {
       if (
-        !name
-        || !Number.isFinite(wholesalePrice)
-        || wholesalePrice <= 0
-        || !Number.isInteger(minOrder)
-        || minOrder < 25
-        || !Number.isInteger(stock)
-        || stock < minOrder
+        !textValue(finalName)
+        || !textValue(finalDescription)
+        || !Number.isFinite(finalWholesalePrice)
+        || finalWholesalePrice <= 0
+        || !Number.isInteger(finalMinOrder)
+        || finalMinOrder < 25
+        || !Number.isInteger(finalStock)
+        || finalStock < finalMinOrder
       ) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Name, positive price, minimum order of at least 25, and stock at least equal to minimum order are required to activate a wholesale product.' });
+        return res.status(400).json({ error: 'Name, description, positive price, minimum order of at least 25, and stock at least equal to minimum order are required to activate a wholesale product.' });
       }
+      if (finalImageCount < MIN_WHOLESALE_PRODUCT_IMAGES) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'At least 3 product images are required before this wholesale product can go live.' });
+      }
+    }
+
+    let firstImage = current.image_url;
+    for (const image of images) {
+      const filePath = publicUploadPath(image);
+      if (!firstImage) firstImage = filePath;
+      await client.query(
+        'INSERT INTO wholesale_product_media (wholesale_product_id, file_path) VALUES ($1, $2)',
+        [current.id, filePath]
+      );
+    }
+
+    const result = await client.query(
+      `UPDATE wholesale_products
+       SET name = COALESCE($1, name),
+           name_urdu = COALESCE($2, name_urdu),
+           description = COALESCE($3, description),
+           wholesale_price = COALESCE($4, wholesale_price),
+           min_order_quantity = COALESCE($5, min_order_quantity),
+           available_stock = COALESCE($6, available_stock),
+           image_url = COALESCE($7, image_url),
+           status = $8,
+           admin_reviewed_at = NOW(),
+           admin_reviewed_by = COALESCE($9, 'admin'),
+           updated_at = NOW()
+       WHERE id = $10
+       RETURNING *`,
+      [
+        name || null,
+        textValue(req.body.name_urdu) || null,
+        description || null,
+        Number.isFinite(wholesalePrice) && wholesalePrice > 0 ? wholesalePrice : null,
+        Number.isInteger(minOrder) && minOrder >= 25 ? minOrder : null,
+        Number.isInteger(stock) && stock >= 0 ? stock : null,
+        firstImage || null,
+        status,
+        req.user?.email || req.user?.role || 'admin',
+        req.params.id,
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      product: normalizeWholesaleProduct(result.rows[0]),
+      message: status === 'active' ? 'Wholesale product activated for sellers.' : `Wholesale product marked ${status}.`,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const uploadAdminWholesaleProductImages = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+
+    const images = req.files?.product_images || [];
+    if (!images.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Select at least one JPG or PNG image to upload.' });
     }
 
     const currentResult = await client.query(
@@ -668,42 +844,71 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
 
     const result = await client.query(
       `UPDATE wholesale_products
-       SET name = COALESCE($1, name),
-           name_urdu = COALESCE($2, name_urdu),
-           description = COALESCE($3, description),
-           wholesale_price = COALESCE($4, wholesale_price),
-           min_order_quantity = COALESCE($5, min_order_quantity),
-           available_stock = COALESCE($6, available_stock),
-           image_url = COALESCE($7, image_url),
-           status = $8,
-           admin_description_note = COALESCE($9, admin_description_note),
-           admin_price_note = COALESCE($10, admin_price_note),
-           admin_reviewed_at = NOW(),
-           admin_reviewed_by = COALESCE($11, 'admin'),
+       SET image_url = COALESCE($1, image_url),
            updated_at = NOW()
-       WHERE id = $12
+       WHERE id = $2
        RETURNING *`,
-      [
-        name || null,
-        textValue(req.body.name_urdu) || null,
-        description || null,
-        Number.isFinite(wholesalePrice) && wholesalePrice > 0 ? wholesalePrice : null,
-        Number.isInteger(minOrder) && minOrder >= 25 ? minOrder : null,
-        Number.isInteger(stock) && stock >= 0 ? stock : null,
-        firstImage || null,
-        status,
-        textValue(req.body.admin_description_note) || null,
-        textValue(req.body.admin_price_note) || null,
-        req.user?.email || req.user?.role || 'admin',
-        req.params.id,
-      ]
+      [firstImage || null, current.id]
     );
+    const imageCount = await countWholesaleProductImages(client, current.id);
 
     await client.query('COMMIT');
     res.json({
-      product: normalizeWholesaleProduct(result.rows[0]),
-      message: status === 'active' ? 'Wholesale product activated for sellers.' : `Wholesale product marked ${status}.`,
+      product: {
+        ...normalizeWholesaleProduct(result.rows[0]),
+        image_count: imageCount,
+      },
+      message: `Uploaded ${images.length} wholesale product image${images.length === 1 ? '' : 's'}. Product now has ${imageCount} image${imageCount === 1 ? '' : 's'}.`,
     });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const deleteAdminWholesaleProduct = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+
+    const productKey = textValue(req.params.id);
+    const confirmationName = textValue(req.body?.confirmation_name || req.body?.name);
+    const currentResult = await client.query(
+      `SELECT id, product_uid, name
+       FROM wholesale_products
+       WHERE id::text = $1 OR product_uid = $1
+       FOR UPDATE`,
+      [productKey]
+    );
+    const current = currentResult.rows[0];
+    if (!current) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesale product not found' });
+    }
+    if (confirmationName.toLowerCase() !== textValue(current.name).toLowerCase()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Type the exact product name to delete this wholesale product.' });
+    }
+
+    const linkedOrders = await client.query(
+      'SELECT COUNT(*) FROM wholesale_orders WHERE wholesale_product_id = $1',
+      [current.id]
+    );
+    if (Number(linkedOrders.rows[0].count || 0) > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'This product has wholesale orders linked to it. Pause liveness instead of deleting it.',
+      });
+    }
+
+    await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [current.id]);
+    await client.query('DELETE FROM wholesale_products WHERE id = $1', [current.id]);
+
+    await client.query('COMMIT');
+    res.json({ message: `${current.name} deleted from wholesale products.` });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);
     next(error);
@@ -833,10 +1038,15 @@ const getAdminWholesaleOrders = async (req, res, next) => {
 const reviewWholesaleOrderByAdmin = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
-    const status = textValue(req.body.status);
-    const note = textValue(req.body.note);
-    if (!['approved_by_admin', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: 'Admin can approve or reject wholesale orders only' });
+    const body = req.body || {};
+    const status = textValue(body.status);
+    const note = textValue(body.note);
+    if (!['approved_by_admin', 'rejected', 'accepted'].includes(status)) {
+      return res.status(400).json({ error: 'Admin can approve, reject, or accept wholesale orders only' });
+    }
+
+    if (status === 'accepted') {
+      return acceptWholesaleOrderForActor(req, res, next, { admin: true });
     }
 
     const result = await pool.query(
@@ -845,7 +1055,7 @@ const reviewWholesaleOrderByAdmin = async (req, res, next) => {
            admin_note = $2,
            admin_reviewed_at = NOW(),
            rejected_at = CASE WHEN $1 = 'rejected' THEN NOW() ELSE rejected_at END
-       WHERE id = $3
+       WHERE (id::text = $3 OR order_code = $3)
          AND status = 'admin_review'
        RETURNING *`,
       [status, note || null, req.params.id]
@@ -871,6 +1081,7 @@ module.exports = {
   updateMyWholesaleProduct,
   getWholesalerOrders,
   acceptWholesaleOrder,
+  acceptWholesaleOrderByAdmin,
   rejectWholesaleOrderByWholesaler,
   getWholesalerPayouts,
   getWholesaleCatalogForSeller,
@@ -878,6 +1089,8 @@ module.exports = {
   getSellerWholesaleOrders,
   getAdminWholesaleProducts,
   reviewAdminWholesaleProduct,
+  uploadAdminWholesaleProductImages,
+  deleteAdminWholesaleProduct,
   getAdminWholesalers,
   updateAdminWholesalerStatus,
   reportWholesalerToTopTeam,
