@@ -2,7 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
-const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
+const { ensureStoredUploadsTable, persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 const {
   createCode,
   ensureWholesaleTables,
@@ -32,6 +32,7 @@ const wholesaleProductLiveWhere = `
       SELECT wp.image_url AS media_path
       WHERE COALESCE(wp.image_url, '') <> ''
     ) wholesale_product_images
+    JOIN uploaded_files uf ON uf.file_path = wholesale_product_images.media_path
   ) >= ${MIN_WHOLESALE_PRODUCT_IMAGES}
 `;
 
@@ -562,6 +563,7 @@ const getWholesalerPayouts = async (req, res, next) => {
 const getWholesaleCatalogForSeller = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
+    await ensureStoredUploadsTable(pool);
     const result = await pool.query(
       `SELECT
         wp.*,
@@ -604,6 +606,7 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
 
     await client.query('BEGIN');
     await ensureWholesaleTables(client);
+    await ensureStoredUploadsTable(client);
     const productResult = await client.query(
       `SELECT wp.*, w.status AS wholesaler_status
        FROM wholesale_products wp
