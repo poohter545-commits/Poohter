@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const UPLOAD_ROOT = path.resolve(__dirname, '..', 'uploads');
+const defaultUploadRoot = path.resolve(__dirname, '..', 'uploads');
+const UPLOAD_ROOT = path.resolve(process.env.UPLOAD_ROOT || defaultUploadRoot);
 
 const normalizeUploadPath = (value = '') => (
   String(value || '')
