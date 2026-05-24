@@ -1,5 +1,3 @@
-const bcrypt = require('bcrypt');
-
 const numberValue = (value) => Number(value || 0);
 const textValue = (value) => String(value || '').trim();
 
@@ -176,13 +174,18 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       name_urdu TEXT,
       description TEXT,
       wholesale_price NUMERIC(12,2) NOT NULL,
-      min_order_quantity INTEGER NOT NULL DEFAULT 25,
+      min_order_quantity INTEGER NOT NULL DEFAULT 1,
       available_stock INTEGER NOT NULL DEFAULT 0,
       image_url TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
+      status TEXT NOT NULL DEFAULT 'pending',
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
+  `);
+  await clientOrPool.query(`
+    ALTER TABLE wholesale_products
+      ALTER COLUMN status SET DEFAULT 'pending',
+      ALTER COLUMN min_order_quantity SET DEFAULT 1
   `);
   await clientOrPool.query(`
     ALTER TABLE wholesale_products
@@ -190,6 +193,14 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS admin_price_note TEXT,
       ADD COLUMN IF NOT EXISTS admin_reviewed_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT
+  `);
+  await clientOrPool.query(`
+    UPDATE wholesale_products
+    SET admin_reviewed_at = COALESCE(admin_reviewed_at, updated_at, created_at, NOW()),
+        admin_reviewed_by = COALESCE(admin_reviewed_by, 'admin'),
+        updated_at = NOW()
+    WHERE status = 'active'
+      AND admin_reviewed_at IS NULL
   `);
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS wholesale_product_media (
@@ -238,9 +249,6 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
     )
   `);
 
-  if (process.env.SEED_DEMO_DATA === 'true') {
-    await seedDummyWholesaler(clientOrPool);
-  }
 };
 
 const ensureWholesaleTables = async (clientOrPool) => {
@@ -265,72 +273,64 @@ const ensureWholesaleTables = async (clientOrPool) => {
   return wholesaleSchemaPromise;
 };
 
-const seedDummyWholesaler = async (clientOrPool) => {
-  const existing = await clientOrPool.query('SELECT id FROM wholesalers WHERE email = $1 LIMIT 1', ['wholesale@poohter.local']);
-  let wholesalerId = existing.rows[0]?.id;
-
-  if (!wholesalerId) {
-    const password = await bcrypt.hash('Whole@123', 10);
-    const result = await clientOrPool.query(
-      `INSERT INTO wholesalers (
-        cnic_number, name, email, password, phone, shop_name, business_type,
-        warehouse_address, city, bank_name, account_title, account_number,
-        mobile_wallet, status, approved_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'approved', NOW())
-       RETURNING id`,
-      [
-        '35202-0000000-1',
-        'Demo Wholesale Owner',
-        'wholesale@poohter.local',
-        password,
-        '0300-0000001',
-        'Poohter Demo Wholesale',
-        'General supplies',
-        'Demo wholesale warehouse, Lahore',
-        'Lahore',
-        'Demo Bank',
-        'Demo Wholesale Owner',
-        'PK00POOHTERWHOLESALE',
-        '0300-0000001',
-      ]
-    );
-    wholesalerId = result.rows[0].id;
-  }
-
-  if (wholesalerId) {
-    await clientOrPool.query(
-      `INSERT INTO wholesale_products (
-        product_uid, wholesaler_id, name, name_urdu, description,
-        wholesale_price, min_order_quantity, available_stock, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')
-       ON CONFLICT (product_uid) DO NOTHING`,
-      [
-        'WHP-DEMO-001',
-        wholesalerId,
-        'Cotton T-Shirts Wholesale Pack',
-        '',
-        'Demo wholesale item for sellers. Minimum purchase is 25 units.',
-        850,
-        25,
-        250,
-      ]
-    );
-  }
-};
-
 const normalizeWholesaler = (row) => ({
   ...row,
   id: numberValue(row.id),
 });
 
-const normalizeWholesaleProduct = (row) => ({
-  ...row,
-  id: numberValue(row.id),
-  wholesaler_id: numberValue(row.wholesaler_id),
-  wholesale_price: numberValue(row.wholesale_price),
-  min_order_quantity: numberValue(row.min_order_quantity),
-  available_stock: numberValue(row.available_stock),
-});
+const normalizeMediaFiles = (mediaFiles) => {
+  let parsed = mediaFiles;
+  if (typeof mediaFiles === 'string') {
+    try {
+      parsed = JSON.parse(mediaFiles);
+    } catch {
+      parsed = [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((file) => {
+      if (!file) return null;
+      if (typeof file === 'string') {
+        return { type: 'image', file_path: textValue(file) };
+      }
+      const filePath = textValue(file.file_path || file.path || file.url);
+      if (!filePath) return null;
+      return {
+        ...file,
+        id: file.id == null ? file.id : numberValue(file.id),
+        type: file.type || 'image',
+        file_path: filePath,
+      };
+    })
+    .filter(Boolean);
+};
+
+const productImagePaths = (row, mediaFiles) => {
+  const seen = new Set();
+  return [row.image_url, ...mediaFiles.map((file) => file.file_path)]
+    .map(textValue)
+    .filter((path) => {
+      if (!path || seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    });
+};
+
+const normalizeWholesaleProduct = (row) => {
+  const mediaFiles = normalizeMediaFiles(row.media_files);
+  return {
+    ...row,
+    id: numberValue(row.id),
+    wholesaler_id: numberValue(row.wholesaler_id),
+    wholesale_price: numberValue(row.wholesale_price),
+    min_order_quantity: numberValue(row.min_order_quantity),
+    available_stock: numberValue(row.available_stock),
+    media_files: mediaFiles,
+    product_images: productImagePaths(row, mediaFiles),
+  };
+};
 
 const normalizeWholesaleOrder = (row) => ({
   ...row,
@@ -384,7 +384,21 @@ const wholesaleOrderSelect = `
 `;
 
 const createSellerProductFromWholesaleOrder = async (client, order) => {
-  if (order.linked_product_id) return order.linked_product_id;
+  if (order.linked_product_id) {
+    const linkedProductId = numberValue(order.linked_product_id);
+    await client.query(
+      `UPDATE products
+       SET product_uid = COALESCE(NULLIF(product_uid, ''), $2),
+           receipt_code = COALESCE(NULLIF(receipt_code, ''), $3)
+       WHERE id = $1`,
+      [
+        linkedProductId,
+        `PHT-${String(linkedProductId).padStart(6, '0')}`,
+        `RCT-${String(linkedProductId).padStart(6, '0')}`,
+      ]
+    );
+    return linkedProductId;
+  }
 
   const insert = await client.query(
     `INSERT INTO products (
@@ -458,5 +472,4 @@ module.exports = {
   wholesaleOrderSelect,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
-  seedDummyWholesaler,
 };

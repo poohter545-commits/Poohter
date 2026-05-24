@@ -18,6 +18,7 @@ const {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_here';
 const MIN_WHOLESALE_PRODUCT_IMAGES = 3;
+const MIN_WHOLESALE_ORDER_QUANTITY = 1;
 
 const wholesaleProductLiveWhere = `
   COALESCE(NULLIF(TRIM(wp.description), ''), '') <> ''
@@ -277,12 +278,12 @@ const createWholesalerProduct = async (req, res, next) => {
       || !Number.isFinite(wholesalePrice)
       || wholesalePrice <= 0
       || !Number.isInteger(minOrder)
-      || minOrder < 25
+      || minOrder < MIN_WHOLESALE_ORDER_QUANTITY
       || !Number.isInteger(stock)
       || stock < minOrder
     ) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Product name, positive wholesale price, minimum order of at least 25, and stock at least equal to minimum order are required' });
+      return res.status(400).json({ error: 'Product name, positive wholesale price, positive minimum order, and stock at least equal to minimum order are required' });
     }
 
     const result = await client.query(
@@ -359,9 +360,9 @@ const updateMyWholesaleProduct = async (req, res, next) => {
     const stock = Number.parseInt(req.body.available_stock, 10);
     const status = ['active', 'paused'].includes(req.body.status) ? req.body.status : 'active';
 
-    if (!Number.isFinite(wholesalePrice) || wholesalePrice <= 0 || !Number.isInteger(minOrder) || minOrder < 25 || !Number.isInteger(stock) || stock < minOrder) {
+    if (!Number.isFinite(wholesalePrice) || wholesalePrice <= 0 || !Number.isInteger(minOrder) || minOrder < MIN_WHOLESALE_ORDER_QUANTITY || !Number.isInteger(stock) || stock < minOrder) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Wholesale price, minimum order of at least 25, and stock at least equal to minimum order are required' });
+      return res.status(400).json({ error: 'Wholesale price, positive minimum order, and stock at least equal to minimum order are required' });
     }
 
     const currentResult = await client.query(
@@ -565,13 +566,22 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
         wp.*,
         COALESCE(w.shop_name, w.name) AS wholesaler_shop,
         w.city AS wholesaler_city,
-        w.phone AS wholesaler_phone
+        w.phone AS wholesaler_phone,
+        COALESCE(
+          json_agg(
+            json_build_object('id', wpm.id, 'type', 'image', 'file_path', wpm.file_path)
+            ORDER BY wpm.id
+          ) FILTER (WHERE wpm.id IS NOT NULL),
+          '[]'
+        ) AS media_files
        FROM wholesale_products wp
        JOIN wholesalers w ON wp.wholesaler_id = w.id
+       LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
        WHERE wp.status = 'active'
          AND ${wholesaleProductLiveWhere}
          AND w.status = 'approved'
          AND wp.available_stock >= wp.min_order_quantity
+       GROUP BY wp.id, w.id
        ORDER BY wp.created_at DESC`
     );
     res.json(result.rows.map(normalizeWholesaleProduct));
@@ -609,7 +619,7 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
       return res.status(404).json({ error: 'Active wholesale product not found' });
     }
 
-    const minOrder = Math.max(25, Number(product.min_order_quantity || 25));
+    const minOrder = Math.max(MIN_WHOLESALE_ORDER_QUANTITY, Number(product.min_order_quantity || MIN_WHOLESALE_ORDER_QUANTITY));
     if (quantity < minOrder) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: `Minimum wholesale order is ${minOrder} units` });
@@ -729,7 +739,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const finalWholesalePrice = Number.isFinite(wholesalePrice) && wholesalePrice > 0
       ? wholesalePrice
       : Number(current.wholesale_price);
-    const finalMinOrder = Number.isInteger(minOrder) && minOrder >= 25
+    const finalMinOrder = Number.isInteger(minOrder) && minOrder >= MIN_WHOLESALE_ORDER_QUANTITY
       ? minOrder
       : Number(current.min_order_quantity);
     const finalStock = Number.isInteger(stock) && stock >= 0
@@ -744,12 +754,12 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         || !Number.isFinite(finalWholesalePrice)
         || finalWholesalePrice <= 0
         || !Number.isInteger(finalMinOrder)
-        || finalMinOrder < 25
+        || finalMinOrder < MIN_WHOLESALE_ORDER_QUANTITY
         || !Number.isInteger(finalStock)
         || finalStock < finalMinOrder
       ) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Name, description, positive price, minimum order of at least 25, and stock at least equal to minimum order are required to activate a wholesale product.' });
+        return res.status(400).json({ error: 'Name, description, positive price, positive minimum order, and stock at least equal to minimum order are required to activate a wholesale product.' });
       }
       if (finalImageCount < MIN_WHOLESALE_PRODUCT_IMAGES) {
         await client.query('ROLLBACK');
@@ -787,7 +797,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         textValue(req.body.name_urdu) || null,
         description || null,
         Number.isFinite(wholesalePrice) && wholesalePrice > 0 ? wholesalePrice : null,
-        Number.isInteger(minOrder) && minOrder >= 25 ? minOrder : null,
+        Number.isInteger(minOrder) && minOrder >= MIN_WHOLESALE_ORDER_QUANTITY ? minOrder : null,
         Number.isInteger(stock) && stock >= 0 ? stock : null,
         firstImage || null,
         status,
