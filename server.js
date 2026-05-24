@@ -11,7 +11,7 @@ const topteamRoutes = require('./routes/topteamRoutes');
 const wholesalerRoutes = require('./routes/wholesalerRoutes');
 const logger = require('./middleware/logger');
 const { initProductionDb } = require('./scripts/initProductionDb');
-const { UPLOAD_ROOT, ensureUploadDir } = require('./utils/uploads');
+const { UPLOAD_ROOT, ensureUploadDir, serveStoredUpload } = require('./utils/uploads');
 
 dotenv.config();
 
@@ -100,6 +100,7 @@ const legacyUploadRoot = path.resolve(process.cwd(), 'uploads');
 if (legacyUploadRoot !== UPLOAD_ROOT) {
   app.use('/uploads', express.static(legacyUploadRoot));
 }
+app.get(/^\/uploads\/(.+)/, serveStoredUpload);
 app.use('/api', productRoutes);
 app.use('/api', apiRoutes);
 app.use('/api/seller', sellerRoutes);

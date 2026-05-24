@@ -2,7 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
-const { publicUploadPath } = require('../utils/uploads');
+const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 const {
   createCode,
   ensureWholesaleTables,
@@ -285,6 +285,7 @@ const createWholesalerProduct = async (req, res, next) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Product name, positive wholesale price, positive minimum order, and stock at least equal to minimum order are required' });
     }
+    await persistUploadedFiles(images, client);
 
     const result = await client.query(
       `INSERT INTO wholesale_products (
@@ -766,6 +767,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         return res.status(400).json({ error: 'At least 3 product images are required before this wholesale product can go live.' });
       }
     }
+    await persistUploadedFiles(images, client);
 
     let firstImage = current.image_url;
     for (const image of images) {
@@ -840,6 +842,7 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Wholesale product not found' });
     }
+    await persistUploadedFiles(images, client);
 
     let firstImage = current.image_url;
     for (const image of images) {
