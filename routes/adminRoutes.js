@@ -8,6 +8,8 @@ const authMiddleware = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/roles');
 const { ensureUploadDir } = require('../utils/uploads');
 
+const PRODUCT_MEDIA_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
+
 const productMediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'product_video') {
@@ -36,8 +38,21 @@ const uploadProductMedia = multer({
     }
     return cb(null, true);
   },
-  limits: { fileSize: 10 * 1024 * 1024 }
+  limits: { fileSize: PRODUCT_MEDIA_UPLOAD_LIMIT_BYTES }
 });
+
+const productMediaFields = (fields) => (req, res, next) => {
+  uploadProductMedia.fields(fields)(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      const message = err.code === 'LIMIT_FILE_SIZE'
+        ? 'File exceeds the 50MB upload limit.'
+        : `Upload error: ${err.message}`;
+      return res.status(400).json({ error: message });
+    }
+    if (err) return res.status(400).json({ error: err.message });
+    return next();
+  });
+};
 
 router.post('/login', adminController.login);
 
@@ -55,12 +70,12 @@ router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTop
 router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
 router.patch(
   '/wholesale/products/:id/images',
-  uploadProductMedia.fields([{ name: 'product_images', maxCount: 3 }]),
+  productMediaFields([{ name: 'product_images', maxCount: 3 }]),
   wholesaleController.uploadAdminWholesaleProductImages
 );
 router.patch(
   '/wholesale/products/:id/review',
-  uploadProductMedia.fields([{ name: 'product_images', maxCount: 3 }]),
+  productMediaFields([{ name: 'product_images', maxCount: 3 }]),
   wholesaleController.reviewAdminWholesaleProduct
 );
 router.delete('/wholesale/products/:id', wholesaleController.deleteAdminWholesaleProduct);
@@ -69,7 +84,7 @@ router.patch('/products/:id/status', adminController.updateProductStatus);
 router.patch('/products/:id/stock', adminController.updateProductStock);
 router.patch(
   '/products/:id/warehouse',
-  uploadProductMedia.fields([
+  productMediaFields([
     { name: 'product_images', maxCount: 5 },
     { name: 'product_video', maxCount: 1 }
   ]),

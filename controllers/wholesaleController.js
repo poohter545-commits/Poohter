@@ -19,6 +19,7 @@ const {
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_here';
 const MIN_WHOLESALE_PRODUCT_IMAGES = 3;
 const MIN_WHOLESALE_ORDER_QUANTITY = 1;
+const truthyBodyValue = (value) => ['true', '1', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 
 const wholesaleProductLiveWhere = `
   COALESCE(NULLIF(TRIM(wp.description), ''), '') <> ''
@@ -757,6 +758,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const minOrder = Number.parseInt(req.body.min_order_quantity, 10);
     const stock = Number.parseInt(req.body.available_stock, 10);
     const images = req.files?.product_images || [];
+    const replaceImages = truthyBodyValue(req.body.replace_images);
 
     const currentResult = await client.query(
       'SELECT * FROM wholesale_products WHERE id = $1 FOR UPDATE',
@@ -779,7 +781,13 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const finalStock = Number.isInteger(stock) && stock >= 0
       ? stock
       : Number(current.available_stock);
-    const finalImageCount = await countWholesaleProductImages(client, current.id) + images.length;
+    const existingImageCount = await countWholesaleProductImages(client, current.id);
+    const finalImageCount = replaceImages ? images.length : existingImageCount + images.length;
+
+    if (replaceImages && images.length !== MIN_WHOLESALE_PRODUCT_IMAGES) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Re-upload the wholesale product folder with exactly 3 JPG or PNG images.' });
+    }
 
     if (status === 'active') {
       if (
@@ -802,7 +810,11 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     }
     await persistUploadedFiles(images, client);
 
-    let firstImage = current.image_url;
+    let firstImage = replaceImages ? null : current.image_url;
+    if (replaceImages) {
+      await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [current.id]);
+    }
+
     for (const image of images) {
       const filePath = publicUploadPath(image);
       if (!firstImage) firstImage = filePath;
@@ -840,11 +852,17 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         req.params.id,
       ]
     );
+    const imageCount = await countWholesaleProductImages(client, current.id);
 
     await client.query('COMMIT');
     res.json({
-      product: normalizeWholesaleProduct(result.rows[0]),
-      message: status === 'active' ? 'Wholesale product activated for sellers.' : `Wholesale product marked ${status}.`,
+      product: {
+        ...normalizeWholesaleProduct(result.rows[0]),
+        image_count: imageCount,
+      },
+      message: replaceImages
+        ? 'Wholesale product folder reuploaded and images replaced.'
+        : status === 'active' ? 'Wholesale product activated for sellers.' : `Wholesale product marked ${status}.`,
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);
@@ -861,9 +879,14 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
     await ensureWholesaleTables(client);
 
     const images = req.files?.product_images || [];
+    const replaceImages = truthyBodyValue(req.body.replace_images);
     if (!images.length) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Select at least one JPG or PNG image to upload.' });
+    }
+    if (replaceImages && images.length !== MIN_WHOLESALE_PRODUCT_IMAGES) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Re-upload the wholesale product folder with exactly 3 JPG or PNG images.' });
     }
 
     const currentResult = await client.query(
@@ -877,7 +900,11 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
     }
     await persistUploadedFiles(images, client);
 
-    let firstImage = current.image_url;
+    let firstImage = replaceImages ? null : current.image_url;
+    if (replaceImages) {
+      await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [current.id]);
+    }
+
     for (const image of images) {
       const filePath = publicUploadPath(image);
       if (!firstImage) firstImage = filePath;
@@ -903,7 +930,9 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
         ...normalizeWholesaleProduct(result.rows[0]),
         image_count: imageCount,
       },
-      message: `Uploaded ${images.length} wholesale product image${images.length === 1 ? '' : 's'}. Product now has ${imageCount} image${imageCount === 1 ? '' : 's'}.`,
+      message: replaceImages
+        ? `Reuploaded wholesale product folder. Product now has ${imageCount} images.`
+        : `Uploaded ${images.length} wholesale product image${images.length === 1 ? '' : 's'}. Product now has ${imageCount} image${imageCount === 1 ? '' : 's'}.`,
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);
