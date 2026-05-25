@@ -758,7 +758,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const minOrder = Number.parseInt(req.body.min_order_quantity, 10);
     const stock = Number.parseInt(req.body.available_stock, 10);
     const images = req.files?.product_images || [];
-    const replaceImages = truthyBodyValue(req.body.replace_images);
+    const replaceImages = truthyBodyValue(req.body.replace_images) || images.length === MIN_WHOLESALE_PRODUCT_IMAGES;
 
     const currentResult = await client.query(
       'SELECT * FROM wholesale_products WHERE id = $1 FOR UPDATE',
