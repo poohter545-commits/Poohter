@@ -2,7 +2,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
-const { ensureStoredUploadsTable, persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
+const { ensureStoredUploadsTable, persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
 const {
   createCode,
   ensureWholesaleTables,
@@ -57,6 +57,8 @@ const publicWholesaler = (row) => ({
   account_title: row.account_title,
   account_number: row.account_number,
   mobile_wallet: row.mobile_wallet,
+  cnic_front: publicUploadPathFromValue(row.cnic_front) || null,
+  cnic_back: publicUploadPathFromValue(row.cnic_back) || null,
   status: row.status,
   rejected_reason: row.rejected_reason,
   topteam_report_status: row.topteam_report_status,
@@ -69,6 +71,21 @@ const publicWholesaler = (row) => ({
   approved_at: row.approved_at,
   created_at: row.created_at,
 });
+
+const normalizeWholesaleProductUploads = (row) => {
+  const product = normalizeWholesaleProduct(row);
+  const mediaFiles = product.media_files.map((media) => ({
+    ...media,
+    file_path: publicUploadPathFromValue(media.file_path),
+  }));
+
+  return {
+    ...product,
+    image_url: publicUploadPathFromValue(product.image_url) || null,
+    media_files: mediaFiles,
+    product_images: product.product_images.map(publicUploadPathFromValue).filter(Boolean),
+  };
+};
 
 const countWholesaleProductImages = async (clientOrPool, productId) => {
   const result = await clientOrPool.query(
@@ -571,11 +588,21 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
         w.city AS wholesaler_city,
         w.phone AS wholesaler_phone,
         COALESCE(
+          COUNT(DISTINCT wpm.file_path)
+          + CASE
+              WHEN COALESCE(wp.image_url, '') <> ''
+                AND COUNT(wpm.id) FILTER (WHERE wpm.file_path = wp.image_url) = 0
+              THEN 1
+              ELSE 0
+            END,
+          0
+        ) AS image_count,
+        COALESCE(
           json_agg(
             json_build_object('id', wpm.id, 'type', 'image', 'file_path', wpm.file_path)
             ORDER BY wpm.id
           ) FILTER (WHERE wpm.id IS NOT NULL),
-          '[]'
+          '[]'::json
         ) AS media_files
        FROM wholesale_products wp
        JOIN wholesalers w ON wp.wholesaler_id = w.id
@@ -587,7 +614,10 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
        GROUP BY wp.id, w.id
        ORDER BY wp.created_at DESC`
     );
-    res.json(result.rows.map(normalizeWholesaleProduct));
+    res.json(result.rows.map(row => ({
+      ...normalizeWholesaleProductUploads(row),
+      image_count: numberValue(row.image_count),
+    })));
   } catch (error) {
     next(error);
   }
@@ -704,7 +734,7 @@ const getAdminWholesaleProducts = async (req, res, next) => {
          wp.created_at DESC`
     );
     res.json(result.rows.map(row => ({
-      ...normalizeWholesaleProduct(row),
+      ...normalizeWholesaleProductUploads(row),
       image_count: numberValue(row.image_count),
     })));
   } catch (error) {

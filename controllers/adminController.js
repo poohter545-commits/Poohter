@@ -243,7 +243,11 @@ const getAllSellers = async (req, res, next) => {
        FROM sellers
        ORDER BY created_at DESC`
     );
-    res.status(200).json(result.rows);
+    res.status(200).json(result.rows.map((seller) => ({
+      ...seller,
+      cnic_front: publicUploadPathFromValue(seller.cnic_front) || null,
+      cnic_back: publicUploadPathFromValue(seller.cnic_back) || null,
+    })));
   } catch (error) {
     next(error);
   }
