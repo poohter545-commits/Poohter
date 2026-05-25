@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { JWT_SECRET } = require('../config/auth');
 const { getPayoutSummary } = require('../utils/sellerPayouts');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
@@ -11,7 +12,7 @@ const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 const generateToken = (seller) => {
   return jwt.sign(
     { id: seller.id, email: seller.email, role: 'seller' },
-    process.env.JWT_SECRET || 'your_default_secret',
+    JWT_SECRET,
     { expiresIn: '24h' }
   );
 };

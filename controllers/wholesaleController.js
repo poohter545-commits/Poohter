@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { JWT_SECRET } = require('../config/auth');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 const { ensureStoredUploadsTable, persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
 const {
@@ -16,7 +17,6 @@ const {
   receiptLinesForWholesaleOrder,
 } = require('../utils/wholesaleFlow');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_here';
 const MIN_WHOLESALE_PRODUCT_IMAGES = 3;
 const MIN_WHOLESALE_ORDER_QUANTITY = 1;
 const truthyBodyValue = (value) => ['true', '1', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());

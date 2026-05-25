@@ -1,10 +1,10 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { JWT_SECRET } = require('../config/auth');
 const { createEmailOtp, normalizeEmail, resendEmailOtp, verifyEmailOtp } = require('../utils/emailOtp');
 
 const PASSWORD_REGEX = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
-const JWT_SECRET = process.env.JWT_SECRET || 'your_default_secret';
 
 const validatePassword = (password, confirmPassword) => {
   if (typeof password !== 'string' || password.length < 6) {

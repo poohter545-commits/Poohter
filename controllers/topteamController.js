@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { JWT_SECRET } = require('../config/auth');
 const {
   DEFAULT_COMMISSION_RATE,
   getPayoutSummary,
@@ -23,7 +24,7 @@ const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 
 const generateTopTeamToken = () => jwt.sign(
   { id: 'topteam', email: 'topteam@poohter.local', role: 'topteam' },
-  process.env.JWT_SECRET || 'your_jwt_secret_here',
+  JWT_SECRET,
   { expiresIn: '12h' }
 );
 

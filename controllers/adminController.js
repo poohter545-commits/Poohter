@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
+const { JWT_SECRET } = require('../config/auth');
 const { createUniqueOrderCode } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
@@ -12,7 +13,7 @@ const {
 
 const generateAdminToken = () => jwt.sign(
   { id: 'admin', email: 'admin@poohter.local', role: 'admin' },
-  process.env.JWT_SECRET || 'your_jwt_secret_here',
+  JWT_SECRET,
   { expiresIn: '12h' }
 );
 
