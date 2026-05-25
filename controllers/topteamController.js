@@ -365,7 +365,7 @@ const getOverview = async (req, res, next) => {
           (SELECT COUNT(*) FROM return_requests WHERE status = 'requested') AS open_returns,
           (SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5) AS low_stock_items,
           (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process,
-          (SELECT COUNT(*) FROM wholesale_products WHERE status = 'active' AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
+          (SELECT COUNT(*) FROM wholesale_products WHERE status = 'topteam_pending' AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
           (SELECT COUNT(*) FROM wholesalers WHERE status = 'approved' AND topteam_report_status = 'pending') AS reported_wholesalers
       `)
       ,
@@ -580,7 +580,7 @@ const getOverview = async (req, res, next) => {
           w.city AS wholesaler_city
         FROM wholesale_products wp
         JOIN wholesalers w ON w.id = wp.wholesaler_id
-        WHERE wp.status = 'active'
+        WHERE wp.status = 'topteam_pending'
           AND w.status = 'approved'
           AND COALESCE(wp.pricing_status, 'pending_top_team') = 'pending_top_team'
         ORDER BY wp.admin_reviewed_at DESC NULLS LAST, wp.created_at DESC
@@ -1356,7 +1356,7 @@ const approveWholesaleProductPricing = async (req, res, next) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Wholesale product not found' });
     }
-    if (product.status !== 'active' || product.wholesaler_status !== 'approved') {
+    if (!['topteam_pending', 'active'].includes(product.status) || product.wholesaler_status !== 'approved') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Admin must approve this wholesale product before Top Team pricing' });
     }
@@ -1374,6 +1374,7 @@ const approveWholesaleProductPricing = async (req, res, next) => {
            top_team_extra_cost = $2,
            final_price = $3,
            pricing_status = 'approved',
+           status = 'active',
            priced_by_top_team_id = $4,
            priced_at = NOW(),
            updated_at = NOW()

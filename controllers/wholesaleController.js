@@ -455,7 +455,7 @@ const updateMyWholesaleProduct = async (req, res, next) => {
       return res.status(404).json({ error: 'Wholesale product not found' });
     }
 
-    if (!['active', 'paused'].includes(current.status)) {
+    if (!['active', 'paused', 'topteam_pending'].includes(current.status)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Admin review is required before this wholesale product can go live.' });
     }
@@ -479,7 +479,7 @@ const updateMyWholesaleProduct = async (req, res, next) => {
            priced_at = NULL,
            min_order_quantity = $2,
            available_stock = $3,
-           status = $4,
+           status = CASE WHEN $4 = 'active' THEN 'topteam_pending' ELSE $4 END,
            updated_at = NOW()
        WHERE id = $5 AND wholesaler_id = $6
        RETURNING *`,
@@ -803,7 +803,7 @@ const getAdminWholesaleProducts = async (req, res, next) => {
        LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
        GROUP BY wp.id, w.id
        ORDER BY
-         CASE WHEN wp.status = 'pending' THEN 0 WHEN wp.status = 'active' THEN 1 ELSE 2 END,
+         CASE WHEN wp.status = 'pending' THEN 0 WHEN wp.status = 'topteam_pending' THEN 1 WHEN wp.status = 'active' THEN 2 ELSE 3 END,
          wp.created_at DESC`
     );
     res.json(result.rows.map(row => ({
@@ -821,9 +821,10 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     await client.query('BEGIN');
     await ensureWholesaleTables(client);
 
-    const status = ['active', 'rejected', 'pending', 'paused'].includes(req.body.status)
+    const status = ['active', 'rejected', 'pending', 'paused', 'topteam_pending'].includes(req.body.status)
       ? req.body.status
       : 'active';
+    const nextStatus = status === 'active' ? 'topteam_pending' : status;
     const name = textValue(req.body.name);
     const description = textValue(req.body.description);
     const wholesalePrice = Number(req.body.wholesale_price);
@@ -903,11 +904,11 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
            description = COALESCE($3, description),
            wholesale_price = COALESCE($4, wholesale_price),
            base_price = COALESCE($4, base_price, wholesale_price),
-           top_team_extra_cost = CASE WHEN $8 = 'active' THEN 0 ELSE top_team_extra_cost END,
-           final_price = CASE WHEN $8 = 'active' THEN NULL ELSE final_price END,
-           pricing_status = CASE WHEN $8 = 'active' THEN 'pending_top_team' ELSE pricing_status END,
-           priced_by_top_team_id = CASE WHEN $8 = 'active' THEN NULL ELSE priced_by_top_team_id END,
-           priced_at = CASE WHEN $8 = 'active' THEN NULL ELSE priced_at END,
+           top_team_extra_cost = CASE WHEN $8 = 'topteam_pending' THEN 0 ELSE top_team_extra_cost END,
+           final_price = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE final_price END,
+           pricing_status = CASE WHEN $8 = 'topteam_pending' THEN 'pending_top_team' ELSE pricing_status END,
+           priced_by_top_team_id = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE priced_by_top_team_id END,
+           priced_at = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE priced_at END,
            min_order_quantity = COALESCE($5, min_order_quantity),
            available_stock = COALESCE($6, available_stock),
            image_url = COALESCE($7, image_url),
@@ -925,7 +926,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         Number.isInteger(minOrder) && minOrder >= MIN_WHOLESALE_ORDER_QUANTITY ? minOrder : null,
         Number.isInteger(stock) && stock >= 0 ? stock : null,
         firstImage || null,
-        status,
+        nextStatus,
         req.user?.email || req.user?.role || 'admin',
         req.params.id,
       ]
@@ -940,7 +941,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
       },
       message: replaceImages
         ? 'Wholesale product folder reuploaded and images replaced.'
-        : status === 'active' ? 'Wholesale product sent to Top Team pricing before seller visibility.' : `Wholesale product marked ${status}.`,
+        : nextStatus === 'topteam_pending' ? 'Wholesale product sent to Top Team pricing before seller visibility.' : `Wholesale product marked ${nextStatus}.`,
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);
