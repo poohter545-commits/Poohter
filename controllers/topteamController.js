@@ -365,7 +365,7 @@ const getOverview = async (req, res, next) => {
           (SELECT COUNT(*) FROM return_requests WHERE status = 'requested') AS open_returns,
           (SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5) AS low_stock_items,
           (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process,
-          (SELECT COUNT(*) FROM wholesale_products WHERE status = 'topteam_pending' AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
+          (SELECT COUNT(*) FROM wholesale_products WHERE status IN ('topteam_pending', 'active') AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
           (SELECT COUNT(*) FROM wholesalers WHERE status = 'approved' AND topteam_report_status = 'pending') AS reported_wholesalers
       `)
       ,
@@ -580,7 +580,7 @@ const getOverview = async (req, res, next) => {
           w.city AS wholesaler_city
         FROM wholesale_products wp
         JOIN wholesalers w ON w.id = wp.wholesaler_id
-        WHERE wp.status = 'topteam_pending'
+        WHERE wp.status IN ('topteam_pending', 'active')
           AND w.status = 'approved'
           AND COALESCE(wp.pricing_status, 'pending_top_team') = 'pending_top_team'
         ORDER BY wp.admin_reviewed_at DESC NULLS LAST, wp.created_at DESC
