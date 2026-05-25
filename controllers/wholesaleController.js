@@ -106,6 +106,62 @@ const countWholesaleProductImages = async (clientOrPool, productId) => {
   return paths.size;
 };
 
+const wholesaleProductUploadPaths = async (client, productId) => {
+  const result = await client.query(
+    `SELECT ARRAY_REMOVE(ARRAY_AGG(DISTINCT file_path), NULL) AS file_paths
+     FROM (
+       SELECT image_url AS file_path
+       FROM wholesale_products
+       WHERE id = $1
+       UNION
+       SELECT file_path
+       FROM wholesale_product_media
+       WHERE wholesale_product_id = $1
+     ) product_uploads`,
+    [productId]
+  );
+
+  return (result.rows[0]?.file_paths || [])
+    .map(publicUploadPathFromValue)
+    .filter(Boolean);
+};
+
+const clearWholesaleProductMedia = async (client, productId) => {
+  const uploadPaths = await wholesaleProductUploadPaths(client, productId);
+  await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [productId]);
+
+  if (uploadPaths.length) {
+    await ensureStoredUploadsTable(client);
+    await client.query('DELETE FROM uploaded_files WHERE file_path = ANY($1::text[])', [uploadPaths]);
+  }
+
+  return uploadPaths.length;
+};
+
+const resetWholesaleProductFolderData = async (client, productId) => {
+  const removedUploadCount = await clearWholesaleProductMedia(client, productId);
+  const result = await client.query(
+    `UPDATE wholesale_products
+     SET name_urdu = NULL,
+         description = NULL,
+         image_url = NULL,
+         status = 'pending',
+         admin_description_note = NULL,
+         admin_price_note = NULL,
+         admin_reviewed_at = NULL,
+         admin_reviewed_by = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [productId]
+  );
+
+  return {
+    product: result.rows[0],
+    removedUploadCount,
+  };
+};
+
 const registerWholesaler = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
@@ -812,7 +868,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
 
     let firstImage = replaceImages ? null : current.image_url;
     if (replaceImages) {
-      await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [current.id]);
+      await clearWholesaleProductMedia(client, current.id);
     }
 
     for (const image of images) {
@@ -902,7 +958,7 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
 
     let firstImage = replaceImages ? null : current.image_url;
     if (replaceImages) {
-      await client.query('DELETE FROM wholesale_product_media WHERE wholesale_product_id = $1', [current.id]);
+      await clearWholesaleProductMedia(client, current.id);
     }
 
     for (const image of images) {
@@ -937,6 +993,85 @@ const uploadAdminWholesaleProductImages = async (req, res, next) => {
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);
     next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const resetAdminWholesaleProductFolderData = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+
+    const productKey = textValue(req.params.id);
+    const currentResult = await client.query(
+      `SELECT id, name, product_uid
+       FROM wholesale_products
+       WHERE id::text = $1 OR product_uid = $1
+       FOR UPDATE`,
+      [productKey]
+    );
+    const current = currentResult.rows[0];
+    if (!current) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesale product not found' });
+    }
+
+    const resetResult = await resetWholesaleProductFolderData(client, current.id);
+    await client.query('COMMIT');
+
+    return res.json({
+      product: {
+        ...normalizeWholesaleProduct(resetResult.product),
+        image_count: 0,
+      },
+      message: `Old folder data removed for ${current.name}. Upload the wholesale folder again.`,
+      removed_uploads: resetResult.removedUploadCount,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    return next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const resetAllAdminWholesaleProductFolderData = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+
+    const productsResult = await client.query(
+      `SELECT id
+       FROM wholesale_products wp
+       WHERE wp.admin_reviewed_at IS NOT NULL
+          OR wp.admin_reviewed_by IS NOT NULL
+          OR COALESCE(wp.admin_description_note, '') <> ''
+          OR COALESCE(wp.admin_price_note, '') <> ''
+       ORDER BY wp.id
+       FOR UPDATE`
+    );
+
+    let removedUploadCount = 0;
+    for (const product of productsResult.rows) {
+      const resetResult = await resetWholesaleProductFolderData(client, product.id);
+      removedUploadCount += resetResult.removedUploadCount;
+    }
+
+    await client.query('COMMIT');
+    const resetCount = productsResult.rows.length;
+    return res.json({
+      reset_count: resetCount,
+      removed_uploads: removedUploadCount,
+      message: resetCount
+        ? `Old folder data removed for ${resetCount} wholesale product${resetCount === 1 ? '' : 's'}. Upload the folders again from admin.`
+        : 'No wholesale products had admin folder data to reset.',
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    return next(error);
   } finally {
     client.release();
   }
@@ -1179,6 +1314,8 @@ module.exports = {
   getAdminWholesaleProducts,
   reviewAdminWholesaleProduct,
   uploadAdminWholesaleProductImages,
+  resetAdminWholesaleProductFolderData,
+  resetAllAdminWholesaleProductFolderData,
   deleteAdminWholesaleProduct,
   getAdminWholesalers,
   updateAdminWholesalerStatus,

@@ -78,6 +78,8 @@ router.patch(
   productMediaFields([{ name: 'product_images', maxCount: 3 }]),
   wholesaleController.reviewAdminWholesaleProduct
 );
+router.delete('/wholesale/products/folder-data', wholesaleController.resetAllAdminWholesaleProductFolderData);
+router.delete('/wholesale/products/:id/folder-data', wholesaleController.resetAdminWholesaleProductFolderData);
 router.delete('/wholesale/products/:id', wholesaleController.deleteAdminWholesaleProduct);
 router.get('/products', adminController.getAllProducts);
 router.patch('/products/:id/status', adminController.updateProductStatus);
