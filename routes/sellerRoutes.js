@@ -8,6 +8,9 @@ const authMiddleware = require('../middleware/authMiddleware');
 const pool = require('../config/db');
 const { ensureUploadDir } = require('../utils/uploads');
 
+const PRODUCT_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
+const PRODUCT_VIDEO_LIMIT_BYTES = 10 * 1024 * 1024;
+
 // Multer Storage Configuration for Products
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -29,11 +32,11 @@ const productUpload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'product_images') {
-        const filetypes = /jpeg|jpg|png/;
+        const filetypes = /jpeg|jpg|png|webp/;
         const mimetype = filetypes.test(file.mimetype);
         const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
         if (mimetype && extname) return cb(null, true);
-        return cb(new Error('Only JPG, JPEG, and PNG images are allowed for products'));
+        return cb(new Error('Only JPG, JPEG, PNG, and WEBP images are allowed for products'));
     } else if (file.fieldname === 'product_video') {
         if (file.mimetype === 'video/mp4') return cb(null, true);
         return cb(new Error('Only MP4 videos are allowed'));
@@ -45,7 +48,7 @@ const productUpload = multer({
     cb(null, true); // Fallback to allow other potential fields
   },
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB default global limit
+    fileSize: PRODUCT_UPLOAD_LIMIT_BYTES
   }
 });
 
@@ -63,15 +66,10 @@ const uploadProductMedia = (req, res, next) => {
       return res.status(400).json({ error: err.message });
     }
 
-    // Post-upload size validation (Multer limits are global, we need field-specific)
-    if (req.files && req.files['product_images']) {
-      for (const f of req.files['product_images']) {
-        if (f.size > 4 * 1024 * 1024) return res.status(400).json({ error: 'Image exceeds 4MB limit' });
-      }
-    }
+    // Seller product images are accepted up to the roomy global upload limit.
     if (req.files && req.files['product_video']) {
       const video = req.files['product_video'][0];
-      if (video.size > 10 * 1024 * 1024) return res.status(400).json({ error: 'Video exceeds 10MB limit' });
+      if (video.size > PRODUCT_VIDEO_LIMIT_BYTES) return res.status(400).json({ error: 'Video exceeds 10MB limit' });
     }
 
     next();

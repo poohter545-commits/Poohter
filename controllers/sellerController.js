@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { getPayoutSummary } = require('../utils/sellerPayouts');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
-const { publicUploadPath } = require('../utils/uploads');
+const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 
 /**
  * Helper to generate JWT for Sellers
@@ -24,6 +24,7 @@ const ensureProductMetadataColumns = async (clientOrPool = pool) => {
       ADD COLUMN IF NOT EXISTS name_urdu TEXT,
       ADD COLUMN IF NOT EXISTS expected_stock INTEGER DEFAULT 0,
       ADD COLUMN IF NOT EXISTS admin_media_required BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS image_url TEXT,
       ADD COLUMN IF NOT EXISTS product_uid TEXT,
       ADD COLUMN IF NOT EXISTS receipt_code TEXT,
       ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
@@ -277,33 +278,38 @@ const createProduct = async (req, res, next) => {
     const cleanUrduName = (name_urdu || '').trim();
     const expectedStock = Math.max(0, Number.parseInt(expected_stock || '0', 10) || 0);
     const needsAdminMedia = admin_media_required === 'true' || admin_media_required === 'on' || admin_media_required === true;
+    const productImages = req.files?.product_images || [];
+    const productVideo = req.files?.product_video?.[0] || null;
+    const imagePaths = productImages.map(publicUploadPath).filter(Boolean);
+    const videoPath = publicUploadPath(productVideo);
 
     await client.query('BEGIN');
     await ensureProductMetadataColumns(client);
+    await persistUploadedFiles([...productImages, ...(productVideo ? [productVideo] : [])], client);
 
     // 1. Insert product (Stock is NOT initialized by seller)
     const productResult = await client.query(
       `INSERT INTO products (
-        name, name_urdu, price, description, seller_id, status, expected_stock, admin_media_required
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        name, name_urdu, price, description, seller_id, status, expected_stock, admin_media_required, image_url
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [cleanName, cleanUrduName, price, description, sellerId, 'pending', expectedStock, needsAdminMedia]
+      [cleanName, cleanUrduName, price, description, sellerId, 'pending', expectedStock, needsAdminMedia, imagePaths[0] || null]
     );
     const product = productResult.rows[0];
 
     const mediaQueries = [];
-    if (req.files && req.files['product_images']) {
-      req.files['product_images'].forEach(file => {
+    if (imagePaths.length) {
+      imagePaths.forEach(filePath => {
         mediaQueries.push(client.query(
           'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-          [product.id, 'image', publicUploadPath(file)]
+          [product.id, 'image', filePath]
         ));
       });
     }
-    if (req.files && req.files['product_video']) {
+    if (videoPath) {
       mediaQueries.push(client.query(
         'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-        [product.id, 'video', publicUploadPath(req.files['product_video'][0])]
+        [product.id, 'video', videoPath]
       ));
     }
     await Promise.all(mediaQueries);
@@ -330,12 +336,36 @@ const getMyProducts = async (req, res, next) => {
     const sellerId = req.user.id;
     const result = await pool.query(
       `SELECT
-        p.id, p.product_uid, p.receipt_code, p.name, p.name_urdu, p.price, p.description, p.status,
+        p.id, p.product_uid, p.receipt_code, p.name, p.name_urdu, p.price, p.description,
+        COALESCE(NULLIF(p.image_url, ''), image_files.first_image_url) AS image_url,
         p.expected_stock, p.admin_media_required, p.created_at,
-        p.rejection_reason, p.warehouse_received_at, p.live_at, i.stock_quantity
+        p.rejection_reason, p.warehouse_received_at, p.live_at, i.stock_quantity,
+        COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
+        COALESCE(media.media_files, '[]'::json) AS media_files,
+        COALESCE(media.image_count, 0) AS image_count,
+        COALESCE(media.video_count, 0) AS video_count
        FROM products p 
        LEFT JOIN inventory i ON p.id = i.product_id 
-       WHERE p.seller_id = $1`,
+       LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(array_agg(pm.file_path ORDER BY pm.created_at, pm.id), ARRAY[]::TEXT[]) AS product_images,
+          (array_agg(pm.file_path ORDER BY pm.created_at, pm.id))[1] AS first_image_url
+        FROM product_media pm
+        WHERE pm.product_id = p.id AND pm.type = 'image'
+       ) image_files ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(
+            json_agg(json_build_object('id', pm.id, 'type', pm.type, 'file_path', pm.file_path) ORDER BY pm.created_at, pm.id),
+            '[]'::json
+          ) AS media_files,
+          COUNT(*) FILTER (WHERE pm.type = 'image') AS image_count,
+          COUNT(*) FILTER (WHERE pm.type = 'video') AS video_count
+        FROM product_media pm
+        WHERE pm.product_id = p.id
+       ) media ON TRUE
+       WHERE p.seller_id = $1
+       ORDER BY p.created_at DESC, p.id DESC`,
       [sellerId]
     );
     res.json(result.rows);
