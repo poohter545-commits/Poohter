@@ -467,23 +467,30 @@ const updateMyWholesaleProduct = async (req, res, next) => {
         return res.status(400).json({ error: 'A wholesale product needs admin review, a description, and at least 3 images before it can go live.' });
       }
     }
+    const currentBasePrice = Number(current.base_price || current.wholesale_price || 0);
+    const hasApprovedTopTeamPrice = current.pricing_status === 'approved' && Number(current.final_price || 0) > 0;
+    const priceChanged = Math.abs(Number(wholesalePrice) - currentBasePrice) > 0.009;
+    const nextStatus = status === 'active' && (!hasApprovedTopTeamPrice || priceChanged)
+      ? 'topteam_pending'
+      : status;
+    const resetPricing = priceChanged || nextStatus === 'topteam_pending';
 
     const result = await client.query(
       `UPDATE wholesale_products
        SET wholesale_price = $1,
            base_price = $1,
-           top_team_extra_cost = 0,
-           final_price = NULL,
-           pricing_status = 'pending_top_team',
-           priced_by_top_team_id = NULL,
-           priced_at = NULL,
+           top_team_extra_cost = CASE WHEN $7::boolean THEN 0 ELSE top_team_extra_cost END,
+           final_price = CASE WHEN $7::boolean THEN NULL ELSE final_price END,
+           pricing_status = CASE WHEN $7::boolean THEN 'pending_top_team' ELSE pricing_status END,
+           priced_by_top_team_id = CASE WHEN $7::boolean THEN NULL ELSE priced_by_top_team_id END,
+           priced_at = CASE WHEN $7::boolean THEN NULL ELSE priced_at END,
            min_order_quantity = $2,
            available_stock = $3,
-           status = CASE WHEN $4 = 'active' THEN 'topteam_pending' ELSE $4 END,
+           status = $4,
            updated_at = NOW()
        WHERE id = $5 AND wholesaler_id = $6
        RETURNING *`,
-      [wholesalePrice, minOrder, stock, status, req.params.id, req.user.id]
+      [wholesalePrice, minOrder, stock, nextStatus, req.params.id, req.user.id, resetPricing]
     );
 
     await client.query('COMMIT');
@@ -824,7 +831,6 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const status = ['active', 'rejected', 'pending', 'paused', 'topteam_pending'].includes(req.body.status)
       ? req.body.status
       : 'active';
-    const nextStatus = status === 'active' ? 'topteam_pending' : status;
     const name = textValue(req.body.name);
     const description = textValue(req.body.description);
     const wholesalePrice = Number(req.body.wholesale_price);
@@ -848,6 +854,13 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const finalWholesalePrice = Number.isFinite(wholesalePrice) && wholesalePrice > 0
       ? wholesalePrice
       : Number(current.wholesale_price);
+    const currentBasePrice = Number(current.base_price || current.wholesale_price || 0);
+    const hasApprovedTopTeamPrice = current.pricing_status === 'approved' && Number(current.final_price || 0) > 0;
+    const priceChanged = Number.isFinite(wholesalePrice) && wholesalePrice > 0 && Math.abs(finalWholesalePrice - currentBasePrice) > 0.009;
+    const nextStatus = status === 'active' && (!hasApprovedTopTeamPrice || priceChanged)
+      ? 'topteam_pending'
+      : status;
+    const resetPricing = priceChanged || nextStatus === 'topteam_pending';
     const finalMinOrder = Number.isInteger(minOrder) && minOrder >= MIN_WHOLESALE_ORDER_QUANTITY
       ? minOrder
       : Number(current.min_order_quantity);
@@ -904,11 +917,11 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
            description = COALESCE($3, description),
            wholesale_price = COALESCE($4, wholesale_price),
            base_price = COALESCE($4, base_price, wholesale_price),
-           top_team_extra_cost = CASE WHEN $8 = 'topteam_pending' THEN 0 ELSE top_team_extra_cost END,
-           final_price = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE final_price END,
-           pricing_status = CASE WHEN $8 = 'topteam_pending' THEN 'pending_top_team' ELSE pricing_status END,
-           priced_by_top_team_id = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE priced_by_top_team_id END,
-           priced_at = CASE WHEN $8 = 'topteam_pending' THEN NULL ELSE priced_at END,
+           top_team_extra_cost = CASE WHEN $11::boolean THEN 0 ELSE top_team_extra_cost END,
+           final_price = CASE WHEN $11::boolean THEN NULL ELSE final_price END,
+           pricing_status = CASE WHEN $11::boolean THEN 'pending_top_team' ELSE pricing_status END,
+           priced_by_top_team_id = CASE WHEN $11::boolean THEN NULL ELSE priced_by_top_team_id END,
+           priced_at = CASE WHEN $11::boolean THEN NULL ELSE priced_at END,
            min_order_quantity = COALESCE($5, min_order_quantity),
            available_stock = COALESCE($6, available_stock),
            image_url = COALESCE($7, image_url),
@@ -929,6 +942,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         nextStatus,
         req.user?.email || req.user?.role || 'admin',
         req.params.id,
+        resetPricing,
       ]
     );
     const imageCount = await countWholesaleProductImages(client, current.id);
