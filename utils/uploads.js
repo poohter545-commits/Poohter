@@ -43,6 +43,21 @@ const publicUploadPath = (file) => {
   return normalized || null;
 };
 
+const publicUploadPathFromValue = (value = '') => {
+  const normalized = normalizeUploadPath(value);
+  if (!normalized) return '';
+
+  const marker = 'uploads/';
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex >= 0) return normalized.slice(markerIndex);
+
+  if (/^(products|sellers|wholesalers|wholesale)\//.test(normalized)) {
+    return `uploads/${normalized}`;
+  }
+
+  return normalized;
+};
+
 const ensureStoredUploadsTable = async (clientOrPool = pool) => {
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS uploaded_files (
@@ -81,8 +96,8 @@ const persistUploadedFiles = async (files = [], clientOrPool = pool) => (
 
 const serveStoredUpload = async (req, res, next) => {
   try {
-    const pathPart = req.params?.[0] || req.path.replace(/^\/uploads\/?/, '');
-    const filePath = normalizeUploadPath(`uploads/${pathPart}`);
+    const requestPath = normalizeUploadPath(req.path);
+    const filePath = publicUploadPathFromValue(requestPath);
     if (!filePath || filePath === 'uploads') return next();
 
     await ensureStoredUploadsTable(pool);
@@ -136,6 +151,7 @@ module.exports = {
   ensureUploadDir,
   ensureStoredUploadsTable,
   normalizeUploadPath,
+  publicUploadPathFromValue,
   persistUploadedFile,
   persistUploadedFiles,
   publicUploadPath,

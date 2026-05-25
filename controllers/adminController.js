@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const { createUniqueOrderCode } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
-const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
+const { persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
 const {
   DEFAULT_DELIVERY_CHARGE,
   DEFAULT_PACKING_MATERIAL_COST,
@@ -360,20 +360,31 @@ const getAllProducts = async (req, res, next) => {
        ORDER BY p.created_at DESC`
     );
 
-    res.status(200).json(result.rows.map(product => ({
-      ...product,
-      price: Number(product.price),
-      admin_price: Number(product.admin_price || product.price || 0),
-      stock_quantity: Number(product.stock_quantity || 0),
-      platform_prices: Array.isArray(product.platform_prices) ? product.platform_prices.map((plan) => ({
+    res.status(200).json(result.rows.map(product => {
+      const mediaFiles = Array.isArray(product.media_files)
+        ? product.media_files.map((media) => ({
+          ...media,
+          file_path: publicUploadPathFromValue(media.file_path),
+        }))
+        : [];
+
+      return {
+        ...product,
+        image_url: publicUploadPathFromValue(product.image_url) || null,
+        media_files: mediaFiles,
+        price: Number(product.price),
+        admin_price: Number(product.admin_price || product.price || 0),
+        stock_quantity: Number(product.stock_quantity || 0),
+        platform_prices: Array.isArray(product.platform_prices) ? product.platform_prices.map((plan) => ({
         ...plan,
         platform_selling_price: Number(plan.platform_selling_price || 0),
         expected_receivable: Number(plan.expected_receivable || 0),
         delivery_charge: Number(plan.delivery_charge || 0),
         packing_material_cost: Number(plan.packing_material_cost || 0),
       })) : [],
-      status: product.status || 'pending'
-    })));
+        status: product.status || 'pending'
+      };
+    }));
   } catch (error) {
     next(error);
   }
