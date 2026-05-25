@@ -51,8 +51,17 @@ const publicUploadPathFromValue = (value = '') => {
   const markerIndex = normalized.lastIndexOf(marker);
   if (markerIndex >= 0) return normalized.slice(markerIndex);
 
-  if (/^(products|sellers|wholesalers|wholesale)\//.test(normalized)) {
-    return `uploads/${normalized}`;
+  let publicPath = normalized;
+  if (/^https?:\/\//i.test(publicPath)) {
+    try {
+      publicPath = new URL(publicPath).pathname.replace(/^\/+/, '');
+    } catch {
+      publicPath = normalized;
+    }
+  }
+
+  if (/^(products|sellers|wholesalers|wholesale)\//.test(publicPath)) {
+    return `uploads/${publicPath}`;
   }
 
   return normalized;
