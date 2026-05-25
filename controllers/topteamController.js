@@ -233,6 +233,7 @@ const getOverview = async (req, res, next) => {
       productPlatformPricing,
       pendingPriceProducts,
       reportedWholesalers,
+      pendingWholesalePriceProducts,
       paymentQueue,
       closedPaymentOrders
     ] = await Promise.all([
@@ -364,6 +365,7 @@ const getOverview = async (req, res, next) => {
           (SELECT COUNT(*) FROM return_requests WHERE status = 'requested') AS open_returns,
           (SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5) AS low_stock_items,
           (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process,
+          (SELECT COUNT(*) FROM wholesale_products WHERE status = 'active' AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
           (SELECT COUNT(*) FROM wholesalers WHERE status = 'approved' AND topteam_report_status = 'pending') AS reported_wholesalers
       `)
       ,
@@ -559,6 +561,33 @@ const getOverview = async (req, res, next) => {
       `),
       pool.query(`
         SELECT
+          wp.id,
+          wp.product_uid,
+          wp.name,
+          wp.description,
+          wp.status,
+          COALESCE(wp.base_price, wp.wholesale_price, 0) AS base_price,
+          COALESCE(wp.top_team_extra_cost, 0) AS top_team_extra_cost,
+          wp.final_price,
+          COALESCE(wp.pricing_status, 'pending_top_team') AS pricing_status,
+          wp.min_order_quantity,
+          wp.available_stock,
+          wp.admin_reviewed_at,
+          COALESCE(w.shop_name, w.name) AS wholesaler_shop,
+          w.name AS wholesaler_name,
+          w.email AS wholesaler_email,
+          w.phone AS wholesaler_phone,
+          w.city AS wholesaler_city
+        FROM wholesale_products wp
+        JOIN wholesalers w ON w.id = wp.wholesaler_id
+        WHERE wp.status = 'active'
+          AND w.status = 'approved'
+          AND COALESCE(wp.pricing_status, 'pending_top_team') = 'pending_top_team'
+        ORDER BY wp.admin_reviewed_at DESC NULLS LAST, wp.created_at DESC
+        LIMIT 50
+      `),
+      pool.query(`
+        SELECT
           o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
           o.total_price, o.delivery_charge, o.packing_material_cost,
           o.payment_status, o.payment_received_amount, o.payment_reference,
@@ -725,6 +754,15 @@ const getOverview = async (req, res, next) => {
           admin_price: numberValue(row.admin_price),
           stock_quantity: numberValue(row.stock_quantity)
         })),
+        pending_wholesale_price_products: pendingWholesalePriceProducts.rows.map(row => ({
+          ...row,
+          id: numberValue(row.id),
+          base_price: numberValue(row.base_price),
+          top_team_extra_cost: numberValue(row.top_team_extra_cost),
+          final_price: row.final_price == null ? null : numberValue(row.final_price),
+          min_order_quantity: numberValue(row.min_order_quantity),
+          available_stock: numberValue(row.available_stock)
+        })),
         order_costs: orderCosts.rows.map(row => ({
           ...row,
           total_price: numberValue(row.total_price),
@@ -824,6 +862,7 @@ const getOverview = async (req, res, next) => {
         open_returns: numberValue(attention.rows[0].open_returns),
         low_stock_items: numberValue(attention.rows[0].low_stock_items),
         orders_in_process: numberValue(attention.rows[0].orders_in_process),
+        pending_wholesale_pricing: numberValue(attention.rows[0].pending_wholesale_pricing),
         reported_wholesalers: numberValue(attention.rows[0].reported_wholesalers)
       },
       payouts,
@@ -1287,6 +1326,80 @@ const submitProductPlatformPlan = async (req, res, next) => {
   }
 };
 
+const approveWholesaleProductPricing = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await ensureExecutiveTables();
+
+    const productId = Number(req.params.id);
+    const extraCost = amountValue(req.body.top_team_extra_cost ?? req.body.extra_cost, NaN);
+
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return res.status(400).json({ error: 'Valid wholesale product ID is required' });
+    }
+    if (!Number.isFinite(extraCost) || extraCost < 0) {
+      return res.status(400).json({ error: 'Enter a valid non-negative Top Team cost per unit' });
+    }
+
+    await client.query('BEGIN');
+
+    const productResult = await client.query(
+      `SELECT wp.*, COALESCE(w.shop_name, w.name) AS wholesaler_shop, w.status AS wholesaler_status
+       FROM wholesale_products wp
+       JOIN wholesalers w ON w.id = wp.wholesaler_id
+       WHERE wp.id = $1
+       FOR UPDATE OF wp`,
+      [productId]
+    );
+    const product = productResult.rows[0];
+    if (!product) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesale product not found' });
+    }
+    if (product.status !== 'active' || product.wholesaler_status !== 'approved') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Admin must approve this wholesale product before Top Team pricing' });
+    }
+
+    const basePrice = numberValue(product.base_price || product.wholesale_price);
+    if (!Number.isFinite(basePrice) || basePrice <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Wholesale product needs a valid base price first' });
+    }
+
+    const finalPrice = basePrice + extraCost;
+    const result = await client.query(
+      `UPDATE wholesale_products
+       SET base_price = $1,
+           top_team_extra_cost = $2,
+           final_price = $3,
+           pricing_status = 'approved',
+           priced_by_top_team_id = $4,
+           priced_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING *`,
+      [basePrice, extraCost, finalPrice, req.user?.email || req.user?.id || 'topteam', product.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      product: {
+        ...result.rows[0],
+        base_price: numberValue(result.rows[0].base_price),
+        top_team_extra_cost: numberValue(result.rows[0].top_team_extra_cost),
+        final_price: numberValue(result.rows[0].final_price),
+      },
+      message: `${product.name} approved for sellers at Rs ${Math.round(finalPrice).toLocaleString()}`,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 const saveOrderCost = async (req, res, next) => {
   try {
     await ensureExecutiveTables();
@@ -1411,6 +1524,7 @@ module.exports = {
   saveSalesPlatform,
   saveProductCost,
   submitProductPlatformPlan,
+  approveWholesaleProductPricing,
   saveOrderCost,
   addMarketingSpend,
   addBusinessTarget

@@ -365,8 +365,9 @@ const createWholesalerProduct = async (req, res, next) => {
     const result = await client.query(
       `INSERT INTO wholesale_products (
         wholesaler_id, name, name_urdu, description, wholesale_price,
+        base_price, top_team_extra_cost, final_price, pricing_status,
         min_order_quantity, available_stock, image_url, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+       ) VALUES ($1, $2, $3, $4, $5, $5, 0, NULL, 'pending_top_team', $6, $7, $8, 'pending')
        RETURNING *`,
       [
         req.user.id,
@@ -470,6 +471,12 @@ const updateMyWholesaleProduct = async (req, res, next) => {
     const result = await client.query(
       `UPDATE wholesale_products
        SET wholesale_price = $1,
+           base_price = $1,
+           top_team_extra_cost = 0,
+           final_price = NULL,
+           pricing_status = 'pending_top_team',
+           priced_by_top_team_id = NULL,
+           priced_at = NULL,
            min_order_quantity = $2,
            available_stock = $3,
            status = $4,
@@ -666,6 +673,8 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
        LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
        WHERE wp.status = 'active'
          AND ${wholesaleProductLiveWhere}
+         AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
+         AND COALESCE(wp.final_price, 0) > 0
          AND w.status = 'approved'
          AND wp.available_stock >= wp.min_order_quantity
        GROUP BY wp.id, w.id
@@ -674,6 +683,10 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
     res.json(result.rows.map(row => ({
       ...normalizeWholesaleProductUploads(row),
       image_count: numberValue(row.image_count),
+      wholesale_price: numberValue(row.final_price ?? row.wholesale_price),
+      final_price: row.final_price == null ? null : numberValue(row.final_price),
+      base_price: numberValue(row.base_price ?? row.wholesale_price),
+      top_team_extra_cost: numberValue(row.top_team_extra_cost),
     })));
   } catch (error) {
     next(error);
@@ -701,6 +714,8 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
        WHERE wp.id = $1
          AND wp.status = 'active'
          AND ${wholesaleProductLiveWhere}
+         AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
+         AND COALESCE(wp.final_price, 0) > 0
        LIMIT 1`,
       [productId]
     );
@@ -720,7 +735,8 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
       return res.status(400).json({ error: 'Requested quantity is higher than available wholesale stock' });
     }
 
-    const totalPrice = Number(product.wholesale_price) * quantity;
+    const unitPrice = Number(product.final_price || product.wholesale_price || product.base_price || 0);
+    const totalPrice = unitPrice * quantity;
     const orderCode = createCode('WSO');
     const orderResult = await client.query(
       `INSERT INTO wholesale_orders (
@@ -728,7 +744,7 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
         quantity, wholesale_unit_price, total_price, seller_note
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, product.wholesale_price, totalPrice, sellerNote || null]
+      [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, unitPrice, totalPrice, sellerNote || null]
     );
 
     await client.query('COMMIT');
@@ -886,6 +902,12 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
            name_urdu = COALESCE($2, name_urdu),
            description = COALESCE($3, description),
            wholesale_price = COALESCE($4, wholesale_price),
+           base_price = COALESCE($4, base_price, wholesale_price),
+           top_team_extra_cost = CASE WHEN $8 = 'active' THEN 0 ELSE top_team_extra_cost END,
+           final_price = CASE WHEN $8 = 'active' THEN NULL ELSE final_price END,
+           pricing_status = CASE WHEN $8 = 'active' THEN 'pending_top_team' ELSE pricing_status END,
+           priced_by_top_team_id = CASE WHEN $8 = 'active' THEN NULL ELSE priced_by_top_team_id END,
+           priced_at = CASE WHEN $8 = 'active' THEN NULL ELSE priced_at END,
            min_order_quantity = COALESCE($5, min_order_quantity),
            available_stock = COALESCE($6, available_stock),
            image_url = COALESCE($7, image_url),
@@ -918,7 +940,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
       },
       message: replaceImages
         ? 'Wholesale product folder reuploaded and images replaced.'
-        : status === 'active' ? 'Wholesale product activated for sellers.' : `Wholesale product marked ${status}.`,
+        : status === 'active' ? 'Wholesale product sent to Top Team pricing before seller visibility.' : `Wholesale product marked ${status}.`,
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => null);

@@ -174,6 +174,12 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       name_urdu TEXT,
       description TEXT,
       wholesale_price NUMERIC(12,2) NOT NULL,
+      base_price NUMERIC(12,2),
+      top_team_extra_cost NUMERIC(12,2) DEFAULT 0,
+      final_price NUMERIC(12,2),
+      pricing_status TEXT NOT NULL DEFAULT 'pending_top_team',
+      priced_by_top_team_id TEXT,
+      priced_at TIMESTAMP,
       min_order_quantity INTEGER NOT NULL DEFAULT 1,
       available_stock INTEGER NOT NULL DEFAULT 0,
       image_url TEXT,
@@ -192,7 +198,54 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS admin_description_note TEXT,
       ADD COLUMN IF NOT EXISTS admin_price_note TEXT,
       ADD COLUMN IF NOT EXISTS admin_reviewed_at TIMESTAMP,
-      ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT
+      ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT,
+      ADD COLUMN IF NOT EXISTS base_price NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS top_team_extra_cost NUMERIC(12,2) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS final_price NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS pricing_status TEXT DEFAULT 'pending_top_team',
+      ADD COLUMN IF NOT EXISTS priced_by_top_team_id TEXT,
+      ADD COLUMN IF NOT EXISTS priced_at TIMESTAMP
+  `);
+  await clientOrPool.query(`
+    UPDATE wholesale_products
+    SET base_price = COALESCE(base_price, wholesale_price),
+        top_team_extra_cost = COALESCE(top_team_extra_cost, 0),
+        pricing_status = COALESCE(pricing_status, 'pending_top_team'),
+        final_price = CASE
+          WHEN COALESCE(pricing_status, 'pending_top_team') = 'approved'
+          THEN COALESCE(final_price, wholesale_price, base_price)
+          ELSE final_price
+        END,
+        updated_at = NOW()
+    WHERE base_price IS NULL
+       OR top_team_extra_cost IS NULL
+       OR pricing_status IS NULL
+       OR (status = 'active' AND pricing_status = 'approved' AND final_price IS NULL)
+  `);
+  await clientOrPool.query(`
+    CREATE TABLE IF NOT EXISTS wholesale_schema_migrations (
+      key TEXT PRIMARY KEY,
+      applied_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await clientOrPool.query(`
+    WITH migration AS (
+      INSERT INTO wholesale_schema_migrations (key)
+      VALUES ('top_team_pricing_backfill')
+      ON CONFLICT (key) DO NOTHING
+      RETURNING key
+    )
+    UPDATE wholesale_products
+    SET base_price = COALESCE(base_price, wholesale_price),
+        top_team_extra_cost = COALESCE(top_team_extra_cost, 0),
+        final_price = COALESCE(final_price, wholesale_price, base_price),
+        pricing_status = 'approved',
+        priced_by_top_team_id = COALESCE(priced_by_top_team_id, 'legacy-backfill'),
+        priced_at = COALESCE(priced_at, admin_reviewed_at, updated_at, created_at, NOW()),
+        updated_at = NOW()
+    WHERE EXISTS (SELECT 1 FROM migration)
+      AND status = 'active'
+      AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team'
   `);
   await clientOrPool.query(`
     UPDATE wholesale_products
@@ -325,6 +378,9 @@ const normalizeWholesaleProduct = (row) => {
     id: numberValue(row.id),
     wholesaler_id: numberValue(row.wholesaler_id),
     wholesale_price: numberValue(row.wholesale_price),
+    base_price: numberValue(row.base_price ?? row.wholesale_price),
+    top_team_extra_cost: numberValue(row.top_team_extra_cost),
+    final_price: row.final_price == null ? null : numberValue(row.final_price),
     min_order_quantity: numberValue(row.min_order_quantity),
     available_stock: numberValue(row.available_stock),
     media_files: mediaFiles,

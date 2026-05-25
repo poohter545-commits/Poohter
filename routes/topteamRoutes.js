@@ -12,6 +12,7 @@ router.post('/wholesalers/:id/ban', authMiddleware, isTopTeam, topteamController
 router.post('/platforms', authMiddleware, isTopTeam, topteamController.saveSalesPlatform);
 router.post('/finance/product-cost', authMiddleware, isTopTeam, topteamController.saveProductCost);
 router.post('/products/:id/platform-plan', authMiddleware, isTopTeam, topteamController.submitProductPlatformPlan);
+router.post('/wholesale/products/:id/pricing', authMiddleware, isTopTeam, topteamController.approveWholesaleProductPricing);
 router.post('/finance/order-cost', authMiddleware, isTopTeam, topteamController.saveOrderCost);
 router.post('/marketing-spend', authMiddleware, isTopTeam, topteamController.addMarketingSpend);
 router.post('/targets', authMiddleware, isTopTeam, topteamController.addBusinessTarget);
