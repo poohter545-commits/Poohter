@@ -234,6 +234,7 @@ const getOverview = async (req, res, next) => {
       pendingPriceProducts,
       reportedWholesalers,
       pendingWholesalePriceProducts,
+      approvedWholesalePriceProducts,
       paymentQueue,
       closedPaymentOrders
     ] = await Promise.all([
@@ -588,6 +589,33 @@ const getOverview = async (req, res, next) => {
       `),
       pool.query(`
         SELECT
+          wp.id,
+          wp.product_uid,
+          wp.name,
+          wp.description,
+          wp.status,
+          COALESCE(wp.base_price, wp.wholesale_price, 0) AS base_price,
+          COALESCE(wp.top_team_extra_cost, 0) AS top_team_extra_cost,
+          wp.final_price,
+          COALESCE(wp.pricing_status, 'pending_top_team') AS pricing_status,
+          wp.min_order_quantity,
+          wp.available_stock,
+          wp.priced_at,
+          COALESCE(w.shop_name, w.name) AS wholesaler_shop,
+          w.name AS wholesaler_name,
+          w.email AS wholesaler_email,
+          w.phone AS wholesaler_phone,
+          w.city AS wholesaler_city
+        FROM wholesale_products wp
+        JOIN wholesalers w ON w.id = wp.wholesaler_id
+        WHERE wp.status = 'active'
+          AND w.status = 'approved'
+          AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
+        ORDER BY wp.priced_at DESC NULLS LAST, wp.updated_at DESC
+        LIMIT 50
+      `),
+      pool.query(`
+        SELECT
           o.id, o.order_code, o.source, o.platform, o.external_order_ref, o.status,
           o.total_price, o.delivery_charge, o.packing_material_cost,
           o.payment_status, o.payment_received_amount, o.payment_reference,
@@ -755,6 +783,15 @@ const getOverview = async (req, res, next) => {
           stock_quantity: numberValue(row.stock_quantity)
         })),
         pending_wholesale_price_products: pendingWholesalePriceProducts.rows.map(row => ({
+          ...row,
+          id: numberValue(row.id),
+          base_price: numberValue(row.base_price),
+          top_team_extra_cost: numberValue(row.top_team_extra_cost),
+          final_price: row.final_price == null ? null : numberValue(row.final_price),
+          min_order_quantity: numberValue(row.min_order_quantity),
+          available_stock: numberValue(row.available_stock)
+        })),
+        approved_wholesale_price_products: approvedWholesalePriceProducts.rows.map(row => ({
           ...row,
           id: numberValue(row.id),
           base_price: numberValue(row.base_price),
