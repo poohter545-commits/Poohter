@@ -93,9 +93,39 @@ const serveStoredUpload = async (req, res, next) => {
     const file = result.rows[0];
     if (!file) return next();
 
-    res.setHeader('Content-Type', file.content_type || 'application/octet-stream');
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
+    const size = data.length;
+    const contentType = file.content_type || 'application/octet-stream';
+
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    return res.send(file.data);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const range = req.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      let start = match?.[1] ? Number.parseInt(match[1], 10) : 0;
+      let end = match?.[2] ? Number.parseInt(match[2], 10) : size - 1;
+
+      if (match && !match[1] && match[2]) {
+        const suffixLength = Number.parseInt(match[2], 10);
+        start = Math.max(size - suffixLength, 0);
+        end = size - 1;
+      }
+
+      if (!match || !Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0 || end >= size) {
+        res.setHeader('Content-Range', `bytes */${size}`);
+        return res.status(416).end();
+      }
+
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+      res.setHeader('Content-Length', end - start + 1);
+      return res.end(data.subarray(start, end + 1));
+    }
+
+    res.setHeader('Content-Length', size);
+    return res.send(data);
   } catch (error) {
     return next(error);
   }

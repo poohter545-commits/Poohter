@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const { createUniqueOrderCode } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
-const { publicUploadPath } = require('../utils/uploads');
+const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 const {
   DEFAULT_DELIVERY_CHARGE,
   DEFAULT_PACKING_MATERIAL_COST,
@@ -77,6 +77,7 @@ const ensureProductWorkflowColumns = async () => {
       ADD COLUMN IF NOT EXISTS name_urdu TEXT,
       ADD COLUMN IF NOT EXISTS expected_stock INTEGER DEFAULT 0,
       ADD COLUMN IF NOT EXISTS admin_media_required BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS image_url TEXT,
       ADD COLUMN IF NOT EXISTS product_uid TEXT,
       ADD COLUMN IF NOT EXISTS receipt_code TEXT,
       ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
@@ -445,19 +446,26 @@ const finalizeWarehouseProduct = async (req, res, next) => {
       return res.status(400).json({ error: 'Admin price cannot be higher than the seller submitted price' });
     }
 
+    const productImages = req.files?.product_images || [];
+    const productVideo = req.files?.product_video?.[0] || null;
+    const imagePaths = productImages.map(publicUploadPath).filter(Boolean);
+    const videoPath = publicUploadPath(productVideo);
+
+    await persistUploadedFiles([...productImages, ...(productVideo ? [productVideo] : [])], client);
+
     const mediaQueries = [];
-    if (req.files && req.files['product_images']) {
-      req.files['product_images'].forEach(file => {
+    if (imagePaths.length) {
+      imagePaths.forEach(filePath => {
         mediaQueries.push(client.query(
           'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-          [id, 'image', publicUploadPath(file)]
+          [id, 'image', filePath]
         ));
       });
     }
-    if (req.files && req.files['product_video']) {
+    if (videoPath) {
       mediaQueries.push(client.query(
         'INSERT INTO product_media (product_id, type, file_path) VALUES ($1, $2, $3)',
-        [id, 'video', publicUploadPath(req.files['product_video'][0])]
+        [id, 'video', videoPath]
       ));
     }
     await Promise.all(mediaQueries);
@@ -491,13 +499,18 @@ const finalizeWarehouseProduct = async (req, res, next) => {
            description = $3,
            admin_price = $4,
            stock = $5,
+           image_url = COALESCE(
+             NULLIF(image_url, ''),
+             $6,
+             (SELECT pm.file_path FROM product_media pm WHERE pm.product_id = products.id AND pm.type = 'image' ORDER BY pm.created_at, pm.id LIMIT 1)
+           ),
            status = 'topteam_pending',
            warehouse_received_at = COALESCE(warehouse_received_at, NOW()),
            live_at = NULL,
            topteam_priced_at = NULL
-       WHERE id = $6
+       WHERE id = $7
        RETURNING *`,
-      [name.trim(), (name_urdu || '').trim(), description.trim(), parsedPrice, parsedStock, id]
+      [name.trim(), (name_urdu || '').trim(), description.trim(), parsedPrice, parsedStock, imagePaths[0] || null, id]
     );
 
     await client.query('COMMIT');
