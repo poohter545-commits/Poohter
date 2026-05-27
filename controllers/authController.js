@@ -19,11 +19,19 @@ const validatePassword = (password, confirmPassword) => {
   return '';
 };
 
-const signUserToken = (user) => jwt.sign(
-  { id: user.id, email: user.email, role: user.role },
-  JWT_SECRET,
-  { expiresIn: '1h' }
-);
+const signUserToken = (user) => {
+  if (!user || !user.id || !user.email) {
+    const error = new Error('Could not create login session for this account. Please login manually.');
+    error.status = 500;
+    throw error;
+  }
+
+  return jwt.sign(
+    { id: user.id, email: user.email, role: user.role },
+    JWT_SECRET,
+    { expiresIn: '1h' }
+  );
+};
 
 const normalizeAccountType = (accountType) => {
   const cleanType = String(accountType || 'buyer').trim().toLowerCase();
@@ -57,6 +65,14 @@ const signup = async (req, res, next) => {
   try {
     const { name, email, password, confirmPassword, phone, address } = req.body;
     const cleanEmail = normalizeEmail(email);
+    console.log('[buyer signup] create account request', {
+      email: cleanEmail,
+      namePresent: Boolean(name),
+      phonePresent: Boolean(phone),
+      addressPresent: Boolean(address),
+      passwordPresent: Boolean(password),
+      confirmPasswordPresent: Boolean(confirmPassword),
+    });
 
     if (!name || !cleanEmail || !password || !confirmPassword || !phone || !address) {
       return res.status(400).json({ error: 'Name, email, password, confirm password, phone, and address are required' });
@@ -92,6 +108,12 @@ const signup = async (req, res, next) => {
       requiresOtp: true,
       email: cleanEmail,
     });
+    console.log('[buyer signup] create account response', {
+      email: cleanEmail,
+      requiresOtp: true,
+      tokenPresent: false,
+      userPresent: false,
+    });
   } catch (error) {
     next(error);
   }
@@ -101,15 +123,36 @@ const verifySignup = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
     const cleanEmail = normalizeEmail(email);
+    const cleanOtp = String(otp || '').trim();
+    console.log('[buyer signup] OTP submit', {
+      email: cleanEmail,
+      otpLength: cleanOtp.length,
+    });
+
+    if (!cleanEmail || !cleanOtp) {
+      return res.status(400).json({ error: 'Email and OTP are required.' });
+    }
+
     const pendingUser = await verifyEmailOtp({
       email: cleanEmail,
       purpose: 'signup',
       accountType: 'buyer',
-      otp,
+      otp: cleanOtp,
+    });
+    console.log('[buyer signup] verify OTP payload', {
+      email: cleanEmail,
+      payloadPresent: Boolean(pendingUser && typeof pendingUser === 'object'),
+      payloadEmail: pendingUser?.email || null,
+      namePresent: Boolean(pendingUser?.name),
+      passwordHashPresent: Boolean(pendingUser?.password_hash),
+      phonePresent: Boolean(pendingUser?.phone),
+      addressPresent: Boolean(pendingUser?.address),
     });
 
     if (
       !pendingUser
+      || typeof pendingUser !== 'object'
+      || Array.isArray(pendingUser)
       || pendingUser.email !== cleanEmail
       || !pendingUser.name
       || !pendingUser.password_hash
@@ -139,11 +182,38 @@ const verifySignup = async (req, res, next) => {
     );
 
     const user = result.rows[0];
+    if (!user) {
+      console.error('[buyer signup] user insert returned no row', { email: cleanEmail });
+      return res.status(500).json({
+        error: 'Email verified, but the account could not be created. Please try again.',
+      });
+    }
+
+    const token = signUserToken(user);
+    if (!token) {
+      console.error('[buyer signup] token creation returned empty token', { userId: user.id, email: user.email });
+      return res.status(500).json({
+        error: 'Account created, but login session could not be created. Please login manually.',
+      });
+    }
+    console.log('[buyer signup] session/token creation', {
+      userId: user.id,
+      email: user.email,
+      userPresent: true,
+      tokenPresent: true,
+      tokenLength: token.length,
+    });
 
     res.status(201).json({
       message: 'Email verified. User registered successfully.',
       user,
-      token: signUserToken(user)
+      token
+    });
+    console.log('[buyer signup] verify API response', {
+      userId: user.id,
+      email: user.email,
+      userPresent: true,
+      tokenPresent: true,
     });
   } catch (error) {
     next(error);
