@@ -29,10 +29,10 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com
+      - key: PUBLIC_API_URL
+        value: https://api.poohter.com
       - key: UPLOAD_ROOT
         value: /opt/render/project/src/uploads
-      - key: SEED_DEMO_DATA
-        value: false
     disk:
       name: poohter-uploads
       mountPath: /opt/render/project/src/uploads

@@ -1,4 +1,23 @@
 const pool = require('../config/db');
+const { publicUploadPathFromValue } = require('../utils/uploads');
+
+const getRequestOrigin = (req) => {
+  const configuredOrigin = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL;
+  if (configuredOrigin) return configuredOrigin.replace(/\/+$/, '');
+
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  return `${protocol}://${req.get('host')}`;
+};
+
+const absoluteMediaUrl = (req, value) => {
+  if (!value) return null;
+  const rawValue = String(value).trim();
+  if (/^https?:\/\//i.test(rawValue)) return rawValue;
+
+  const publicPath = publicUploadPathFromValue(rawValue);
+  if (!publicPath) return null;
+  return `${getRequestOrigin(req)}/${publicPath.replace(/^\/+/, '')}`;
+};
 
 const addToCart = async (req, res, next) => {
   try {
@@ -38,7 +57,9 @@ const addToCart = async (req, res, next) => {
         INSERT INTO cart_items (user_id, product_id, quantity)
         VALUES ($1, $2, $3)
         ON CONFLICT (user_id, product_id)
-        DO UPDATE SET quantity = cart_items.quantity + EXCLUDED.quantity
+        DO UPDATE SET
+          quantity = cart_items.quantity + EXCLUDED.quantity,
+          updated_at = NOW()
         RETURNING id, product_id, quantity
       `;
 
@@ -93,13 +114,21 @@ const getCart = async (req, res, next) => {
 
     const query = `
       SELECT 
+        ci.id,
         ci.product_id,
         p.name AS product_name,
         p.price AS product_price,
+        p.image_url,
+        COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
         ci.quantity,
         (p.price * ci.quantity) AS total_price
       FROM cart_items ci
       JOIN products p ON ci.product_id = p.id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(array_agg(pm.file_path ORDER BY pm.created_at, pm.id), ARRAY[]::TEXT[]) AS product_images
+        FROM product_media pm
+        WHERE pm.product_id = p.id AND pm.type = 'image'
+      ) image_files ON TRUE
       WHERE ci.user_id = $1
       ORDER BY ci.created_at ASC
     `;
@@ -111,7 +140,12 @@ const getCart = async (req, res, next) => {
       ...item,
       product_price: Number(item.product_price),
       total_price: Number(item.total_price),
-      quantity: Number(item.quantity)
+      quantity: Number(item.quantity),
+      image_url: publicUploadPathFromValue(item.image_url) || null,
+      image: absoluteMediaUrl(req, item.image_url) || absoluteMediaUrl(req, item.product_images?.[0]) || null,
+      product_images: Array.isArray(item.product_images)
+        ? item.product_images.map((image) => absoluteMediaUrl(req, image)).filter(Boolean)
+        : []
     }));
 
     return res.status(200).json(cart);

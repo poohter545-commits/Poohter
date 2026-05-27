@@ -159,7 +159,7 @@ const login = async (req, res, next) => {
     }
 
     // 1. Find user by email
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
     const user = result.rows[0];
 
     if (!user) {
@@ -256,6 +256,79 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
+const getUserProfile = async (req, res, next) => {
+  try {
+    const requestedUserId = String(req.params.id || '');
+    const currentUserId = String(req.user?.id || '');
+    const isAdmin = req.user?.role === 'admin';
+
+    if (!isAdmin && requestedUserId !== currentUserId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await pool.query(
+      'SELECT id, name, email, phone, address, role, created_at FROM users WHERE id = $1',
+      [requestedUserId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateUserProfile = async (req, res, next) => {
+  try {
+    const requestedUserId = String(req.params.id || '');
+    const currentUserId = String(req.user?.id || '');
+    const isAdmin = req.user?.role === 'admin';
+
+    if (!isAdmin && requestedUserId !== currentUserId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { name, phone, address } = req.body;
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET name = $1, phone = $2, address = $3
+       WHERE id = $4
+       RETURNING id, name, email, phone, address, role, created_at`,
+      [String(name).trim(), phone || null, address || null, requestedUserId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getUsers = async (req, res, next) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const result = await pool.query(
+      'SELECT id, name, email, phone, address, role, created_at FROM users ORDER BY created_at DESC'
+    );
+    return res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   signup,
   verifySignup,
@@ -263,4 +336,7 @@ module.exports = {
   resendOtp,
   requestPasswordReset,
   resetPassword,
+  getUserProfile,
+  updateUserProfile,
+  getUsers,
 };

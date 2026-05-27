@@ -9,6 +9,7 @@ const sellerRoutes = require('./routes/sellerRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const topteamRoutes = require('./routes/topteamRoutes');
 const wholesalerRoutes = require('./routes/wholesalerRoutes');
+const legalRoutes = require('./routes/legalRoutes');
 const logger = require('./middleware/logger');
 const { initProductionDb } = require('./scripts/initProductionDb');
 const { UPLOAD_ROOT, ensureUploadDir, serveStoredUpload } = require('./utils/uploads');
@@ -107,6 +108,7 @@ app.use('/api/seller', sellerRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/topteam', topteamRoutes);
 app.use('/api/wholesaler', wholesalerRoutes);
+app.use('/api/legal', legalRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'Backend is running' });
@@ -140,16 +142,16 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 const startServer = async () => {
-  app.listen(PORT, async () => {
-    console.log(`Server running on port ${PORT}`);
+  try {
+    await initProductionDb();
+    console.log('Connected to PostgreSQL');
+  } catch (error) {
+    console.error('PostgreSQL connection check failed:', error.message);
+    console.error('Set DATABASE_URL in Render before using API routes that require the database.');
+  }
 
-    try {
-      await initProductionDb();
-      console.log('Connected to PostgreSQL');
-    } catch (error) {
-      console.error('PostgreSQL connection check failed:', error.message);
-      console.error('Set DATABASE_URL in Render before using API routes that require the database.');
-    }
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
   });
 };
 

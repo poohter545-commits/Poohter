@@ -1,10 +1,50 @@
 const pool = require('../config/db');
+const { publicUploadPathFromValue } = require('../utils/uploads');
 
-const normalizeProduct = (product) => ({
-  ...product,
-  // Convert PostgreSQL numeric/decimal fields to JavaScript numbers
-  price: Number(product.price),
-});
+const getRequestOrigin = (req) => {
+  const configuredOrigin = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL;
+  if (configuredOrigin) return configuredOrigin.replace(/\/+$/, '');
+
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  return `${protocol}://${req.get('host')}`;
+};
+
+const absoluteMediaUrl = (req, value) => {
+  if (!value) return null;
+  const rawValue = String(value).trim();
+  if (/^https?:\/\//i.test(rawValue)) return rawValue;
+
+  const publicPath = publicUploadPathFromValue(rawValue);
+  if (!publicPath) return null;
+  return `${getRequestOrigin(req)}/${publicPath.replace(/^\/+/, '')}`;
+};
+
+const normalizeMediaFiles = (req, mediaFiles) => (
+  Array.isArray(mediaFiles)
+    ? mediaFiles.map((media) => ({
+      ...media,
+      file_path: publicUploadPathFromValue(media.file_path),
+      url: absoluteMediaUrl(req, media.file_path),
+    }))
+    : []
+);
+
+const normalizeProduct = (req, product) => {
+  const productImages = Array.isArray(product.product_images)
+    ? product.product_images.map((image) => absoluteMediaUrl(req, image)).filter(Boolean)
+    : [];
+  const image = absoluteMediaUrl(req, product.image_url) || productImages[0] || null;
+
+  return {
+    ...product,
+    price: Number(product.price || 0),
+    stock_quantity: Number(product.stock_quantity || 0),
+    image_url: publicUploadPathFromValue(product.image_url) || null,
+    image,
+    product_images: productImages,
+    media_files: normalizeMediaFiles(req, product.media_files),
+  };
+};
 
 const createProduct = async (req, res, next) => {
   const client = await pool.connect();
@@ -36,7 +76,7 @@ const createProduct = async (req, res, next) => {
     );
 
     await client.query('COMMIT');
-    return res.status(201).json({ product: normalizeProduct(newProduct) });
+    return res.status(201).json({ product: normalizeProduct(req, newProduct) });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
@@ -48,15 +88,160 @@ const createProduct = async (req, res, next) => {
 const getProducts = async (req, res, next) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, price, description, created_at
-       FROM products
-       WHERE status = 'live'
-       ORDER BY created_at DESC`
+      `SELECT
+        p.id,
+        p.name,
+        p.price,
+        p.description,
+        p.image_url,
+        p.created_at,
+        COALESCE(inventory_stock.stock_quantity, 0) AS stock_quantity,
+        COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
+        COALESCE(media.media_files, '[]'::json) AS media_files
+       FROM products p
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(i.stock_quantity), 0) AS stock_quantity
+        FROM inventory i
+        WHERE i.product_id = p.id
+       ) inventory_stock ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(array_agg(pm.file_path ORDER BY pm.created_at, pm.id), ARRAY[]::TEXT[]) AS product_images
+        FROM product_media pm
+        WHERE pm.product_id = p.id AND pm.type = 'image'
+       ) image_files ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          json_agg(json_build_object('id', pm.id, 'type', pm.type, 'file_path', pm.file_path) ORDER BY pm.created_at, pm.id),
+          '[]'::json
+        ) AS media_files
+        FROM product_media pm
+        WHERE pm.product_id = p.id
+       ) media ON TRUE
+       WHERE COALESCE(p.status, 'live') = 'live'
+       ORDER BY p.created_at DESC, p.id DESC`
     );
 
     return res.status(200).json({
-      products: result.rows.map(normalizeProduct),
+      products: result.rows.map((product) => normalizeProduct(req, product)),
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getProductById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT
+        p.id,
+        p.name,
+        p.price,
+        p.description,
+        p.image_url,
+        p.created_at,
+        COALESCE(inventory_stock.stock_quantity, 0) AS stock_quantity,
+        COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
+        COALESCE(media.media_files, '[]'::json) AS media_files
+       FROM products p
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(i.stock_quantity), 0) AS stock_quantity
+        FROM inventory i
+        WHERE i.product_id = p.id
+       ) inventory_stock ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(array_agg(pm.file_path ORDER BY pm.created_at, pm.id), ARRAY[]::TEXT[]) AS product_images
+        FROM product_media pm
+        WHERE pm.product_id = p.id AND pm.type = 'image'
+       ) image_files ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          json_agg(json_build_object('id', pm.id, 'type', pm.type, 'file_path', pm.file_path) ORDER BY pm.created_at, pm.id),
+          '[]'::json
+        ) AS media_files
+        FROM product_media pm
+        WHERE pm.product_id = p.id
+       ) media ON TRUE
+       WHERE p.id = $1 AND COALESCE(p.status, 'live') = 'live'
+       LIMIT 1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    return res.status(200).json(normalizeProduct(req, result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateProduct = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updates = [];
+    const values = [];
+
+    if (req.body.name !== undefined) {
+      const name = String(req.body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Name cannot be empty' });
+      values.push(name);
+      updates.push(`name = $${values.length}`);
+    }
+
+    if (req.body.price !== undefined) {
+      const price = Number(req.body.price);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: 'Price must be a non-negative number' });
+      }
+      values.push(price);
+      updates.push(`price = $${values.length}`);
+    }
+
+    if (req.body.description !== undefined) {
+      values.push(req.body.description || null);
+      updates.push(`description = $${values.length}`);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No product fields were provided' });
+    }
+
+    values.push(id);
+    const result = await pool.query(
+      `UPDATE products
+       SET ${updates.join(', ')}
+       WHERE id = $${values.length}
+       RETURNING id, name, price, description, image_url, created_at`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    return res.json({ product: normalizeProduct(req, result.rows[0]) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteProduct = async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `UPDATE products
+       SET status = 'archived'
+       WHERE id = $1
+       RETURNING id`,
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    return res.json({ message: 'Product archived successfully' });
   } catch (error) {
     next(error);
   }
@@ -65,4 +250,7 @@ const getProducts = async (req, res, next) => {
 module.exports = {
   createProduct,
   getProducts,
+  getProductById,
+  updateProduct,
+  deleteProduct,
 };

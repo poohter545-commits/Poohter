@@ -9,8 +9,15 @@ const {
   resendOtp,
   requestPasswordReset,
   resetPassword,
+  getUserProfile,
+  updateUserProfile,
+  getUsers,
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/authMiddleware'); // Assuming you have an authMiddleware
+
+router.get('/test', (req, res) => {
+  res.json({ status: 'ok', message: 'API is reachable' });
+});
 
 // Auth routes
 router.post('/auth/signup', signup);
@@ -19,6 +26,11 @@ router.post('/auth/login', login);
 router.post('/auth/otp/resend', resendOtp);
 router.post('/auth/password/forgot', requestPasswordReset);
 router.post('/auth/password/reset', resetPassword);
+
+// Buyer profile routes used by the mobile app
+router.get('/user/:id', authMiddleware, getUserProfile);
+router.put('/user/:id', authMiddleware, updateUserProfile);
+router.get('/users', authMiddleware, getUsers);
 
 // Route to get all orders for the authenticated user
 // Protected by authMiddleware to ensure req.user.id is available
