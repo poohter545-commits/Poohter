@@ -295,5 +295,6 @@ module.exports = {
   ensureEmailOtpTable,
   normalizeEmail,
   resendEmailOtp,
+  sendEmail,
   verifyEmailOtp,
 };

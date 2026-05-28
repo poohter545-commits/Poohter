@@ -21,12 +21,25 @@ const ensureSellerPayoutTables = async (clientOrPool) => {
       product_id INTEGER NOT NULL REFERENCES products(id),
       quantity INTEGER NOT NULL DEFAULT 1,
       reason TEXT,
-      status TEXT NOT NULL DEFAULT 'requested',
+      status TEXT NOT NULL DEFAULT 'pending',
       refund_amount NUMERIC(12,2) DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW(),
       processed_at TIMESTAMP,
       inventory_reversed_at TIMESTAMP
     )
+  `);
+  await clientOrPool.query(`
+    ALTER TABLE return_requests
+      ALTER COLUMN status SET DEFAULT 'pending'
+  `);
+  await clientOrPool.query(`
+    UPDATE return_requests
+    SET status = CASE
+      WHEN status = 'requested' THEN 'pending'
+      WHEN status IN ('received', 'refunded') THEN 'completed'
+      ELSE status
+    END
+    WHERE status IN ('requested', 'received', 'refunded')
   `);
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS seller_payouts (
@@ -78,7 +91,7 @@ const sellerPayoutQuery = `
       COALESCE(SUM(rr.quantity * COALESCE(p.admin_price, p.price, 0)), 0) AS refund_amount
     FROM return_requests rr
     JOIN products p ON rr.product_id = p.id
-    WHERE rr.status IN ('approved', 'received', 'refunded')
+    WHERE rr.status IN ('approved', 'completed')
       AND ($1::integer IS NULL OR p.seller_id = $1::integer)
     GROUP BY p.seller_id
   ),

@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../config/auth');
-const { createUniqueOrderCode } = require('../utils/orderIdentity');
+const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
 const { persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
@@ -10,6 +10,15 @@ const {
   DEFAULT_PACKING_MATERIAL_COST,
   ensureOrderChargeColumns,
 } = require('../utils/orderCharges');
+const { sendOrderStatusEmailSafely } = require('../utils/orderNotifications');
+const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
+const {
+  createReturnCode,
+  ensureReturnsTable: ensureReturnRequestTable,
+  getReturnWindow,
+  isReturnStatus,
+  normalizeReturnStatus,
+} = require('../utils/returns');
 
 const generateAdminToken = () => jwt.sign(
   { id: 'admin', email: 'admin@poohter.local', role: 'admin' },
@@ -18,9 +27,13 @@ const generateAdminToken = () => jwt.sign(
 );
 
 const updateOrderStatusColumns = (status) => (
-  status === 'out_for_delivery'
-    ? 'status = $1, out_for_delivery_at = NOW()'
-    : 'status = $1'
+  status === 'out_from_warehouse'
+    ? 'status = $1, out_from_warehouse_at = NOW(), out_for_delivery_at = NOW()'
+    : status === 'out_for_delivery'
+      ? 'status = $1, out_for_delivery_at = NOW()'
+      : status === 'delivered'
+        ? 'status = $1, delivered_at = COALESCE(delivered_at, NOW())'
+        : 'status = $1'
 );
 
 const ensureSellerReviewColumns = async () => {
@@ -142,25 +155,7 @@ const ensureProductWorkflowColumns = async () => {
 
 const ensureReturnsTable = async (clientOrPool = pool) => {
   await ensureSalesPlatformsTable(clientOrPool);
-  await clientOrPool.query(`
-    CREATE TABLE IF NOT EXISTS return_requests (
-      id SERIAL PRIMARY KEY,
-      return_code TEXT UNIQUE,
-      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-      product_id INTEGER NOT NULL REFERENCES products(id),
-      quantity INTEGER NOT NULL DEFAULT 1,
-      reason TEXT,
-      status TEXT NOT NULL DEFAULT 'requested',
-      refund_amount NUMERIC(12,2) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW(),
-      processed_at TIMESTAMP
-    )
-  `);
-  await clientOrPool.query(`
-    ALTER TABLE return_requests
-      ADD COLUMN IF NOT EXISTS inventory_reversed_at TIMESTAMP,
-      ADD COLUMN IF NOT EXISTS platform TEXT
-  `);
+  await ensureReturnRequestTable(clientOrPool);
 };
 
 const login = async (req, res) => {
@@ -587,10 +582,15 @@ const getAllOrders = async (req, res, next) => {
         o.payment_status,
         o.created_at,
         o.out_for_delivery_at,
+        o.delivered_at,
         COALESCE(o.customer_name, u.name) as customer_name,
         COALESCE(o.customer_email, u.email) as customer_email,
         COALESCE(o.customer_phone, u.phone) as customer_phone,
         COALESCE(o.customer_address, u.address) as customer_address,
+        o.customer_city,
+        o.customer_address_notes,
+        o.address_updated_by_admin,
+        o.address_updated_at,
         COALESCE(json_agg(json_build_object(
           'product_id', p.id,
           'product_uid', p.product_uid,
@@ -663,6 +663,7 @@ const recordOrderPayment = async (req, res, next) => {
            payment_received_at = NOW(),
            payment_reference = $2,
            payment_note = $3,
+           delivered_at = COALESCE(delivered_at, NOW()),
            closed_at = NOW()
        WHERE id = $4
        RETURNING *`,
@@ -685,25 +686,115 @@ const recordOrderPayment = async (req, res, next) => {
 };
 
 const updateOrderStatus = async (req, res, next) => {
+  const client = await pool.connect();
+  let updatedOrder = null;
+  let shouldNotifyCustomer = false;
+
   try {
     const { id } = req.params;
     const { status } = req.body;
-    const allowed = ['pending', 'accepted', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'];
+    const allowed = ['pending', 'accepted', 'out_from_warehouse', 'delivered', 'cancelled'];
 
     if (!allowed.includes(status)) {
       return res.status(400).json({ error: 'Invalid order status' });
     }
 
-    const result = await pool.query(
+    await ensureOrderPaymentColumns(client);
+    await client.query('BEGIN');
+
+    const orderResult = await client.query(
+      `SELECT
+         o.id,
+         o.order_code,
+         o.status,
+         COALESCE(o.customer_email, u.email) AS customer_email,
+         COALESCE(o.customer_name, u.name) AS customer_name
+       FROM orders o
+       LEFT JOIN users u ON o.user_id = u.id
+       WHERE o.id = $1
+       FOR UPDATE OF o`,
+      [id]
+    );
+
+    if (orderResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const currentOrder = orderResult.rows[0];
+    const transition = validateStatusTransition(currentOrder.status, status);
+    if (!transition.valid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: transition.message });
+    }
+
+    const result = await client.query(
       `UPDATE orders SET ${updateOrderStatusColumns(status)} WHERE id = $2 RETURNING *`,
       [status, id]
+    );
+
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [id, status]
+    );
+
+    updatedOrder = {
+      ...result.rows[0],
+      customer_email: currentOrder.customer_email,
+      customer_name: currentOrder.customer_name,
+    };
+    shouldNotifyCustomer = ['accepted', 'out_from_warehouse', 'delivered'].includes(status);
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  const email = shouldNotifyCustomer
+    ? await sendOrderStatusEmailSafely({ order: updatedOrder, status: updatedOrder.status })
+    : { sent: false, skipped: true, reason: 'status_not_notified' };
+
+  return res.json({ order: updatedOrder, email });
+};
+
+const updateOrderAddress = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const name = String(req.body.name ?? req.body.customer_name ?? '').trim();
+    const phone = requirePakistaniMobileNumber(req.body.phone ?? req.body.customer_phone, 'Customer phone');
+    const city = String(req.body.city ?? req.body.customer_city ?? '').trim();
+    const address = String(req.body.full_address ?? req.body.address ?? req.body.customer_address ?? '').trim();
+    const notes = String(req.body.notes ?? req.body.customer_address_notes ?? '').trim();
+
+    if (!name || !city || !address) {
+      return res.status(400).json({ error: 'Customer name, phone, city, and full address are required' });
+    }
+
+    await ensureOrderPaymentColumns(pool);
+    const updatedBy = req.user?.email || req.user?.id || 'admin';
+    const result = await pool.query(
+      `UPDATE orders
+       SET customer_name = $1,
+           customer_phone = $2,
+           customer_city = $3,
+           customer_address = $4,
+           customer_address_notes = $5,
+           address_updated_by_admin = $6,
+           address_updated_at = NOW()
+       WHERE id = $7
+       RETURNING id, order_code, customer_name, customer_phone, customer_city,
+         customer_address, customer_address_notes, address_updated_by_admin, address_updated_at`,
+      [name, phone, city, address, notes || null, String(updatedBy), id]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    res.json({ order: result.rows[0] });
+    return res.json({ message: 'Delivery address updated', order: result.rows[0] });
   } catch (error) {
     next(error);
   }
@@ -770,6 +861,8 @@ const createManualOrder = async (req, res, next) => {
         address: customer.address || userResult.rows[0].address
       };
     }
+
+    customer.phone = requirePakistaniMobileNumber(customer.phone, 'Customer phone');
 
     let total = 0;
     const orderItems = [];
@@ -854,7 +947,7 @@ const getAllReturns = async (req, res, next) => {
       SELECT
         rr.id, rr.return_code, rr.order_id, rr.product_id, rr.quantity, rr.reason,
         COALESCE(rr.platform, o.platform, CASE WHEN o.source = 'manual' THEN 'Manual' ELSE 'Poohter app' END) AS platform,
-        rr.status, rr.refund_amount, rr.created_at, rr.processed_at,
+        rr.status, rr.refund_amount, rr.created_at, rr.processed_at, rr.processed_by, rr.admin_note,
         o.order_code, o.created_at AS order_created_at,
         COALESCE(o.customer_name, u.name) AS customer_name,
         COALESCE(o.customer_email, u.email) AS customer_email,
@@ -884,9 +977,9 @@ const createManualReturn = async (req, res, next) => {
   try {
     const { order_code, product_uid, quantity, reason, platform } = req.body;
     const parsedQuantity = Number(quantity || 1);
-    const returnStatus = 'received';
+    const returnStatus = 'completed';
     const cleanPlatform = String(platform || '').trim();
-    const restockStatuses = ['received', 'refunded'];
+    const restockStatuses = ['completed'];
 
     if (!order_code || !product_uid || !cleanPlatform || !Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
       return res.status(400).json({ error: 'Platform, order code, product unique ID, and quantity are required' });
@@ -906,7 +999,7 @@ const createManualReturn = async (req, res, next) => {
     const platformName = platformResult.rows[0].name;
 
     const orderResult = await client.query(
-      `SELECT id, order_code, created_at
+      `SELECT id, order_code, status, COALESCE(delivered_at, closed_at) AS delivered_at
        FROM orders
        WHERE order_code = $1 OR id::text = $1
        LIMIT 1
@@ -920,8 +1013,12 @@ const createManualReturn = async (req, res, next) => {
     }
 
     const order = orderResult.rows[0];
-    const daysSinceOrder = (Date.now() - new Date(order.created_at).getTime()) / (1000 * 60 * 60 * 24);
-    if (daysSinceOrder > 7) {
+    if (!['delivered', 'successful'].includes(order.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Returns are available after successful delivery only.' });
+    }
+    const returnWindow = getReturnWindow(order.delivered_at);
+    if (!returnWindow.eligible) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Return window is closed. Buyers can return items within 7 days only.' });
     }
@@ -957,7 +1054,7 @@ const createManualReturn = async (req, res, next) => {
       return res.status(400).json({ error: `Return quantity cannot exceed remaining returnable quantity (${availableToReturn})` });
     }
 
-    const returnCode = `RET-${Date.now().toString().slice(-8)}`;
+    const returnCode = createReturnCode();
     const refundAmount = Number(item.price) * parsedQuantity;
     const result = await client.query(
       `INSERT INTO return_requests (
@@ -965,7 +1062,7 @@ const createManualReturn = async (req, res, next) => {
         processed_at, inventory_reversed_at
        ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8,
-        CASE WHEN $6 != 'requested' THEN NOW() ELSE NULL END,
+        CASE WHEN $6 != 'pending' THEN NOW() ELSE NULL END,
         CASE WHEN $9 THEN NOW() ELSE NULL END
        )
        RETURNING *`,
@@ -998,6 +1095,75 @@ const createManualReturn = async (req, res, next) => {
   }
 };
 
+const updateReturnStatus = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const status = normalizeReturnStatus(req.body.status);
+    const adminNote = String(req.body.note || req.body.admin_note || '').trim();
+
+    if (!isReturnStatus(status)) {
+      return res.status(400).json({ error: 'Return status must be pending, approved, rejected, or completed' });
+    }
+
+    await client.query('BEGIN');
+    await ensureReturnsTable(client);
+
+    const existingResult = await client.query(
+      `SELECT id, product_id, quantity, status, inventory_reversed_at
+       FROM return_requests
+       WHERE id = $1
+       FOR UPDATE`,
+      [id]
+    );
+
+    if (existingResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Return request not found' });
+    }
+
+    const existing = existingResult.rows[0];
+    const shouldRestock = status === 'completed' && !existing.inventory_reversed_at;
+
+    if (shouldRestock) {
+      await client.query(
+        `INSERT INTO inventory (product_id, warehouse_id, stock_quantity)
+         VALUES ($1, 1, $2)
+         ON CONFLICT (product_id, warehouse_id)
+         DO UPDATE SET stock_quantity = inventory.stock_quantity + EXCLUDED.stock_quantity, updated_at = NOW()`,
+        [existing.product_id, existing.quantity]
+      );
+      await client.query(
+        'UPDATE products SET stock = COALESCE(stock, 0) + $1 WHERE id = $2',
+        [existing.quantity, existing.product_id]
+      );
+    }
+
+    const result = await client.query(
+      `UPDATE return_requests
+       SET status = $1,
+           processed_at = CASE WHEN $1 = 'pending' THEN NULL ELSE NOW() END,
+           processed_by = CASE WHEN $1 = 'pending' THEN NULL ELSE $2 END,
+           admin_note = $3,
+           inventory_reversed_at = CASE
+             WHEN $4::boolean THEN NOW()
+             ELSE inventory_reversed_at
+           END
+       WHERE id = $5
+       RETURNING *`,
+      [status, String(req.user?.email || req.user?.id || 'admin'), adminNote || null, shouldRestock, id]
+    );
+
+    await client.query('COMMIT');
+    return res.json({ return_request: result.rows[0] });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   login,
   getDashboardStats,
@@ -1014,5 +1180,7 @@ module.exports = {
   recordOrderPayment,
   createManualOrder,
   getAllReturns,
-  createManualReturn
+  createManualReturn,
+  updateOrderAddress,
+  updateReturnStatus
 };

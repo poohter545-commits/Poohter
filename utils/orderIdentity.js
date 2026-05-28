@@ -1,4 +1,9 @@
-const ORDER_STATUS_FLOW = ['pending', 'accepted', 'packed', 'shipped', 'out_for_delivery', 'delivered'];
+const ORDER_STATUS_FLOW = ['pending', 'accepted', 'out_from_warehouse', 'delivered'];
+const LEGACY_ORDER_STATUS_ALIASES = {
+  packed: 'accepted',
+  shipped: 'out_from_warehouse',
+  out_for_delivery: 'out_from_warehouse',
+};
 
 const generateOrderCode = () => {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -19,11 +24,16 @@ const createUniqueOrderCode = async (client) => {
 const validateStatusTransition = (currentStatus, newStatus) => {
   if (newStatus === 'cancelled') return { valid: true };
 
-  const currentIndex = ORDER_STATUS_FLOW.indexOf(currentStatus);
+  const normalizedCurrentStatus = LEGACY_ORDER_STATUS_ALIASES[currentStatus] || currentStatus;
+  const currentIndex = ORDER_STATUS_FLOW.indexOf(normalizedCurrentStatus);
   const nextIndex = ORDER_STATUS_FLOW.indexOf(newStatus);
 
   if (nextIndex === -1) return { valid: false, message: 'Invalid status value' };
   if (currentIndex === -1) return { valid: false, message: `Invalid current status: ${currentStatus}` };
+
+  if (nextIndex === currentIndex && currentStatus !== newStatus) {
+    return { valid: true };
+  }
 
   if (nextIndex !== currentIndex + 1) {
     return { valid: false, message: `Invalid jump: Cannot move from ${currentStatus} to ${newStatus}` };
@@ -33,6 +43,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 module.exports = {
+  LEGACY_ORDER_STATUS_ALIASES,
   ORDER_STATUS_FLOW,
   createUniqueOrderCode,
   validateStatusTransition

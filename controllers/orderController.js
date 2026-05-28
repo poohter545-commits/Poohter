@@ -1,10 +1,18 @@
 const pool = require('../config/db');
-const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
+const {
+  LEGACY_ORDER_STATUS_ALIASES,
+  createUniqueOrderCode,
+  validateStatusTransition,
+} = require('../utils/orderIdentity');
 const {
   DEFAULT_DELIVERY_CHARGE,
   DEFAULT_PACKING_MATERIAL_COST,
   ensureOrderChargeColumns,
 } = require('../utils/orderCharges');
+const { sendOrderStatusEmailSafely } = require('../utils/orderNotifications');
+const { extractOrderLookupValue } = require('../utils/orderLookup');
+const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
+const { createReturnCode, ensureReturnsTable, getReturnWindow } = require('../utils/returns');
 
 const getBuyerSnapshot = async (client, buyerId) => {
   const result = await client.query(
@@ -14,10 +22,25 @@ const getBuyerSnapshot = async (client, buyerId) => {
   return result.rows[0] || {};
 };
 
+const ensureBuyerCheckoutContact = async (client, buyerId, buyer = {}) => {
+  const normalizedPhone = requirePakistaniMobileNumber(buyer.phone, 'Your saved phone number');
+  if (normalizedPhone !== buyer.phone) {
+    await client.query('UPDATE users SET phone = $1 WHERE id = $2', [normalizedPhone, buyerId]);
+  }
+  return {
+    ...buyer,
+    phone: normalizedPhone,
+  };
+};
+
 const updateOrderStatusColumns = (status) => (
-  status === 'out_for_delivery'
-    ? 'status = $1, out_for_delivery_at = NOW()'
-    : 'status = $1'
+  status === 'out_from_warehouse'
+    ? 'status = $1, out_from_warehouse_at = NOW(), out_for_delivery_at = NOW()'
+    : status === 'out_for_delivery'
+      ? 'status = $1, out_for_delivery_at = NOW()'
+      : status === 'delivered'
+        ? 'status = $1, delivered_at = COALESCE(delivered_at, NOW())'
+        : 'status = $1'
 );
 
 const createOrder = async (req, res, next) => {
@@ -49,13 +72,22 @@ const createOrder = async (req, res, next) => {
     const buyer = await getBuyerSnapshot(client, buyerId);
 
     // 2. Create the order record first
+    const buyerWithValidContact = await ensureBuyerCheckoutContact(client, buyerId, buyer);
     const orderResult = await client.query(
       `INSERT INTO orders (
         user_id, total_price, status, order_code, source,
         customer_name, customer_email, customer_phone, customer_address
        ) VALUES ($1, $2, 'pending', $3, 'poohter', $4, $5, $6, $7)
        RETURNING id, order_code, created_at`,
-      [buyerId, 0, orderCode, buyer.name || null, buyer.email || null, buyer.phone || null, buyer.address || null]
+      [
+        buyerId,
+        0,
+        orderCode,
+        buyerWithValidContact.name || null,
+        buyerWithValidContact.email || null,
+        buyerWithValidContact.phone,
+        buyerWithValidContact.address || null
+      ]
     );
     const orderId = orderResult.rows[0].id;
 
@@ -153,6 +185,7 @@ const getOrders = async (req, res, next) => {
     if (!buyerId) return res.status(401).json({ error: 'Authentication required' });
 
     await ensureOrderChargeColumns(pool);
+    await ensureReturnsTable(pool);
 
     const result = await pool.query(
       `SELECT 
@@ -166,6 +199,9 @@ const getOrders = async (req, res, next) => {
          o.delivery_charge,
          o.packing_material_cost,
          o.created_at,
+         o.delivered_at,
+         COALESCE(return_summary.return_statuses, ARRAY[]::TEXT[]) AS return_statuses,
+         return_summary.latest_return_at,
          COALESCE(json_agg(json_build_object(
            'product_id', p.id, -- Product ID from the products table
            'product_name', p.name, -- Product name from the products table
@@ -175,30 +211,53 @@ const getOrders = async (req, res, next) => {
        FROM orders o
        LEFT JOIN order_items oi ON o.id = oi.order_id
        LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN LATERAL (
+         SELECT
+           array_agg(DISTINCT rr.status) FILTER (WHERE rr.status IS NOT NULL AND rr.status != 'rejected') AS return_statuses,
+           MAX(rr.created_at) AS latest_return_at
+         FROM return_requests rr
+         WHERE rr.order_id = o.id
+       ) return_summary ON TRUE
        WHERE o.user_id = $1
-       GROUP BY o.id
+       GROUP BY o.id, return_summary.return_statuses, return_summary.latest_return_at
        ORDER BY o.created_at DESC`,
       [buyerId]
     );
 
-    const orders = result.rows.map(order => ({
-      id: order.id,
-      order_code: order.order_code,
-      status: order.status,
-      source: order.source,
-      platform: order.platform,
-      external_order_ref: order.external_order_ref,
-      total_price: Number(order.total_price),
-      delivery_charge: Number(order.delivery_charge || 0),
-      packing_material_cost: Number(order.packing_material_cost || 0),
-      created_at: order.created_at,
-      items: (order.items || []).map(item => ({ // Ensure items is an array, even if empty
-        product_id: item.product_id,
-        product_name: item.product_name,
-        product_price: Number(item.product_price), // Convert to number
-        quantity: Number(item.quantity)
-      }))
-    }));
+    const orders = result.rows.map(order => {
+      const returnStatuses = Array.isArray(order.return_statuses)
+        ? order.return_statuses.filter(Boolean)
+        : [];
+      const deliveredStatus = ['delivered', 'successful'].includes(order.status);
+      const returnWindow = getReturnWindow(order.delivered_at);
+      const hasOpenReturn = returnStatuses.some((status) => ['pending', 'approved', 'completed'].includes(status));
+
+      return {
+        id: order.id,
+        order_code: order.order_code,
+        status: order.status,
+        source: order.source,
+        platform: order.platform,
+        external_order_ref: order.external_order_ref,
+        total_price: Number(order.total_price),
+        delivery_charge: Number(order.delivery_charge || 0),
+        packing_material_cost: Number(order.packing_material_cost || 0),
+        created_at: order.created_at,
+        delivered_at: order.delivered_at,
+        return_status: returnStatuses[0] || null,
+        return_statuses: returnStatuses,
+        return_requested_at: order.latest_return_at,
+        return_period_expires_at: returnWindow.expiresAt,
+        return_eligible: deliveredStatus && returnWindow.eligible && !hasOpenReturn,
+        return_period_expired: deliveredStatus && !returnWindow.eligible && !hasOpenReturn,
+        items: (order.items || []).map(item => ({
+          product_id: item.product_id,
+          product_name: item.product_name,
+          product_price: Number(item.product_price),
+          quantity: Number(item.quantity)
+        }))
+      };
+    });
 
     return res.status(200).json(orders); // Return as an array directly
   } catch (error) {
@@ -262,6 +321,7 @@ const checkout = async (req, res, next) => {
     // 5. Create a new order with a public code for scanning or manual lookup.
     const orderCode = await createUniqueOrderCode(client);
     const buyer = await getBuyerSnapshot(client, userId);
+    const buyerWithValidContact = await ensureBuyerCheckoutContact(client, userId, buyer);
     const orderResult = await client.query(
       `INSERT INTO orders (
         user_id, total_price, order_code, source, status,
@@ -273,10 +333,10 @@ const checkout = async (req, res, next) => {
         userId,
         total_price,
         orderCode,
-        buyer.name || null,
-        buyer.email || null,
-        buyer.phone || null,
-        buyer.address || null,
+        buyerWithValidContact.name || null,
+        buyerWithValidContact.email || null,
+        buyerWithValidContact.phone,
+        buyerWithValidContact.address || null,
         deliveryCharge,
         packingMaterialCost
       ]
@@ -350,6 +410,7 @@ const updateOrderStatus = async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
 
     // Fetch current status and lock row
     const orderRes = await client.query('SELECT status FROM orders WHERE id = $1 FOR UPDATE', [id]);
@@ -399,9 +460,22 @@ const deliveryUpdate = async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
 
-    const lookupCode = order_code || tracking_id;
-    const orderRes = await client.query('SELECT id, order_code, status FROM orders WHERE order_code = $1 FOR UPDATE', [lookupCode]);
+    const lookupCode = extractOrderLookupValue(order_code || tracking_id);
+    if (!lookupCode) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Order code or tracking ID is required' });
+    }
+    const orderRes = await client.query(
+      `SELECT id, order_code, status
+       FROM orders
+       WHERE id::text = $1
+          OR LOWER(order_code) = LOWER($1)
+          OR LOWER(COALESCE(external_order_ref, '')) = LOWER($1)
+       FOR UPDATE`,
+      [lookupCode]
+    );
     if (orderRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Order code not found' });
@@ -436,10 +510,217 @@ const deliveryUpdate = async (req, res, next) => {
   }
 };
 
+const warehouseScan = async (req, res, next) => {
+  const orderId = extractOrderLookupValue(
+    req.body?.orderId
+    || req.body?.order_id
+    || req.body?.orderCode
+    || req.body?.order_code
+    || req.body?.trackingId
+    || req.body?.tracking_id
+    || ''
+  );
+
+  if (!orderId) {
+    return res.status(400).json({ error: 'Order ID or tracking ID is required.' });
+  }
+
+  const client = await pool.connect();
+  let updatedOrder = null;
+  let notificationOrder = null;
+  try {
+    await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
+
+    const orderRes = await client.query(
+      `SELECT
+         o.id,
+         o.order_code,
+         o.external_order_ref,
+         o.status,
+         COALESCE(o.customer_email, u.email) AS customer_email,
+         COALESCE(o.customer_name, u.name) AS customer_name
+       FROM orders o
+       LEFT JOIN users u ON o.user_id = u.id
+       WHERE o.id::text = $1
+          OR LOWER(o.order_code) = LOWER($1)
+          OR LOWER(COALESCE(o.external_order_ref, '')) = LOWER($1)
+       FOR UPDATE OF o`,
+      [orderId]
+    );
+
+    const order = orderRes.rows[0];
+    if (!order) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found. Check the ID and try again.' });
+    }
+
+    const normalizedStatus = LEGACY_ORDER_STATUS_ALIASES[order.status] || order.status;
+
+    if (normalizedStatus === 'out_from_warehouse') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        warning: true,
+        code: 'already_out_from_warehouse',
+        message: 'This order is already out from warehouse.',
+        order: {
+          id: order.id,
+          order_code: order.order_code,
+          status: 'out_from_warehouse',
+        },
+      });
+    }
+
+    if (normalizedStatus !== 'accepted') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'This order is not accepted/ready yet. Admin must accept it before warehouse scan.',
+        currentStatus: order.status,
+      });
+    }
+
+    const result = await client.query(
+      `UPDATE orders
+       SET status = 'out_from_warehouse',
+           out_from_warehouse_at = NOW(),
+           out_for_delivery_at = NOW()
+       WHERE id = $1
+       RETURNING id, order_code, status, total_price, created_at, out_from_warehouse_at, out_for_delivery_at, delivered_at`,
+      [order.id]
+    );
+
+    await client.query(
+      'INSERT INTO delivery_updates (order_id, status) VALUES ($1, $2)',
+      [order.id, 'out_from_warehouse']
+    );
+
+    updatedOrder = result.rows[0];
+    notificationOrder = {
+      ...result.rows[0],
+      customer_email: order.customer_email,
+      customer_name: order.customer_name,
+    };
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return next(error);
+  } finally {
+    client.release();
+  }
+
+  const email = await sendOrderStatusEmailSafely({ order: notificationOrder, status: 'out_from_warehouse' });
+  return res.status(200).json({
+    message: 'Order marked as out from warehouse.',
+    order: updatedOrder,
+    email,
+  });
+};
+
+const requestReturn = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const buyerId = req.user?.id;
+    const orderLookup = extractOrderLookupValue(req.params.id);
+    const reason = String(req.body?.reason || '').trim();
+
+    if (!buyerId) return res.status(401).json({ error: 'Authentication required' });
+    if (!reason) return res.status(400).json({ error: 'Return reason is required' });
+
+    await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
+    await ensureReturnsTable(client);
+
+    const orderResult = await client.query(
+      `SELECT id, order_code, status, COALESCE(delivered_at, closed_at) AS delivered_at
+       FROM orders
+       WHERE user_id = $1
+         AND (id::text = $2 OR LOWER(order_code) = LOWER($2))
+       FOR UPDATE`,
+      [buyerId, orderLookup]
+    );
+
+    if (orderResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+    if (!['delivered', 'successful'].includes(order.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Returns are available after delivery only' });
+    }
+
+    const returnWindow = getReturnWindow(order.delivered_at);
+    if (!returnWindow.eligible) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Return period expired' });
+    }
+
+    const duplicateResult = await client.query(
+      `SELECT id, status
+       FROM return_requests
+       WHERE order_id = $1
+         AND status != 'rejected'
+       LIMIT 1`,
+      [order.id]
+    );
+    if (duplicateResult.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Return request already submitted for this order' });
+    }
+
+    const itemsResult = await client.query(
+      `SELECT product_id, quantity, price
+       FROM order_items
+       WHERE order_id = $1
+       ORDER BY id`,
+      [order.id]
+    );
+    if (itemsResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'This order has no returnable items' });
+    }
+
+    const created = [];
+    for (const item of itemsResult.rows) {
+      const result = await client.query(
+        `INSERT INTO return_requests (
+          return_code, order_id, product_id, quantity, reason, status, refund_amount, platform
+         ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, 'Poohter app')
+         RETURNING id, return_code, order_id, status, created_at`,
+        [
+          createReturnCode(),
+          order.id,
+          item.product_id,
+          item.quantity,
+          reason,
+          Number(item.price || 0) * Number(item.quantity || 0),
+        ]
+      );
+      created.push(result.rows[0]);
+    }
+
+    await client.query('COMMIT');
+    return res.status(201).json({
+      message: 'Return request submitted',
+      order_code: order.order_code,
+      return_requests: created,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   createOrder,
   getOrders,
   checkout,
   updateOrderStatus,
-  deliveryUpdate
+  deliveryUpdate,
+  warehouseScan,
+  requestReturn
 };

@@ -19,6 +19,7 @@ const {
   ensureOrderChargeColumns,
   getOrderItemsSubtotal,
 } = require('../utils/orderCharges');
+const { ensureReturnsTable } = require('../utils/returns');
 
 const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 
@@ -73,27 +74,9 @@ const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
   `);
 };
 
-const ensureReturnTable = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS return_requests (
-      id SERIAL PRIMARY KEY,
-      return_code TEXT UNIQUE,
-      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-      product_id INTEGER NOT NULL REFERENCES products(id),
-      quantity INTEGER NOT NULL DEFAULT 1,
-      reason TEXT,
-      status TEXT NOT NULL DEFAULT 'requested',
-      refund_amount NUMERIC(12,2) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT NOW(),
-      processed_at TIMESTAMP,
-      inventory_reversed_at TIMESTAMP
-    )
-  `);
-};
-
 const ensureExecutiveTables = async () => {
   await ensureWholesaleTables(pool);
-  await ensureReturnTable();
+  await ensureReturnsTable(pool);
   await ensureSalesPlatformsTable(pool);
   await ensureOrderPaymentColumns(pool);
   await pool.query(`
@@ -242,7 +225,7 @@ const getOverview = async (req, res, next) => {
         SELECT
           (SELECT COUNT(*) FROM orders WHERE status != 'cancelled') AS orders,
           (SELECT COALESCE(SUM(total_price), 0) FROM orders WHERE status != 'cancelled') AS gross_sales,
-          (SELECT COALESCE(SUM(refund_amount), 0) FROM return_requests WHERE status IN ('approved', 'received', 'refunded')) AS refunds,
+          (SELECT COALESCE(SUM(refund_amount), 0) FROM return_requests WHERE status IN ('approved', 'completed')) AS refunds,
           (SELECT COALESCE(AVG(total_price), 0) FROM orders WHERE status != 'cancelled') AS average_order_value,
           (
             SELECT COALESCE(SUM(oi.quantity), 0)
@@ -363,9 +346,9 @@ const getOverview = async (req, res, next) => {
         SELECT
           (SELECT COUNT(*) FROM sellers WHERE status = 'pending') AS pending_sellers,
           (SELECT COUNT(*) FROM products WHERE COALESCE(status, 'pending') = 'pending') AS pending_products,
-          (SELECT COUNT(*) FROM return_requests WHERE status = 'requested') AS open_returns,
+          (SELECT COUNT(*) FROM return_requests WHERE status = 'pending') AS open_returns,
           (SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5) AS low_stock_items,
-          (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'packed')) AS orders_in_process,
+          (SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'accepted', 'out_from_warehouse', 'packed', 'shipped', 'out_for_delivery')) AS orders_in_process,
           (SELECT COUNT(*) FROM wholesale_products WHERE status IN ('topteam_pending', 'active') AND COALESCE(pricing_status, 'pending_top_team') = 'pending_top_team') AS pending_wholesale_pricing,
           (SELECT COUNT(*) FROM wholesalers WHERE status = 'approved' AND topteam_report_status = 'pending') AS reported_wholesalers
       `)
@@ -983,6 +966,7 @@ const recordOrderPayment = async (req, res, next) => {
            total_price = $4,
            delivery_charge = $5,
            packing_material_cost = $6,
+           delivered_at = COALESCE(delivered_at, NOW()),
            closed_at = NOW()
        WHERE id = $7
        RETURNING *`,

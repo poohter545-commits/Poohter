@@ -183,9 +183,8 @@
         .badge { padding: 0.25rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; display: inline-flex; align-items: center; gap: 4px; }
         .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
         .status-pending { background: #f1f5f9; color: #64748b; }
-        .status-accepted { background: #eff6ff; color: #2563eb; }
-        .status-packed { background: #fff7ed; color: #ea580c; }
-        .status-shipped { background: #faf5ff; color: #9333ea; }
+        .status-accepted, .status-packed { background: #eff6ff; color: #2563eb; }
+        .status-out_from_warehouse, .status-out_for_delivery, .status-shipped { background: #faf5ff; color: #9333ea; }
         .status-delivered { background: #f0fdf4; color: #16a34a; }
 
         /* Modal */
@@ -884,35 +883,47 @@
             } catch (err) {}
         }
 
+        const normalizeOrderStatus = (status = 'pending') => ({
+            packed: 'accepted',
+            shipped: 'out_from_warehouse',
+            out_for_delivery: 'out_from_warehouse'
+        }[status] || status || 'pending');
+        const orderStatusLabel = (status) => ({
+            pending: 'Pending',
+            accepted: 'Ready',
+            out_from_warehouse: 'Out from warehouse',
+            delivered: 'Delivered',
+            successful: 'Successful',
+            cancelled: 'Cancelled'
+        }[normalizeOrderStatus(status)] || String(status || 'pending').replace(/_/g, ' '));
+
         async function loadOrders() {
             const tbody = document.querySelector('#orders-table tbody');
             try {
                 const orders = await api('/seller/orders');
-                tbody.innerHTML = orders.map(o => `
+                tbody.innerHTML = orders.map(o => {
+                    const status = normalizeOrderStatus(o.status);
+                    const action = status === 'out_from_warehouse'
+                        ? `<button class="btn btn-outline" onclick="updateOrderStatus(${o.order_id}, 'delivered')">Mark Delivered</button>`
+                        : `<span style="color: var(--text-muted); font-weight: 600;">${status === 'accepted' ? 'Waiting for warehouse scan' : status === 'pending' ? 'Waiting for admin acceptance' : '-'}</span>`;
+                    return `
                     <tr>
                         <td><strong>#${o.order_id}</strong></td>
                         <td>
                             ${o.seller_items.map(i => `<div>${i.name} (x${i.quantity})</div>`).join('')}
                         </td>
-                        <td><span class="badge status-${o.status}">${o.status}</span></td>
+                        <td><span class="badge status-${status}">${orderStatusLabel(o.status)}</span></td>
                         <td>${new Date(o.created_at).toLocaleDateString()}</td>
-                        <td>
-                            <select onchange="updateOrderStatus(${o.order_id}, this.value)" style="padding: 5px; border-radius: 6px; font-weight: 600;">
-                                <option value="">Change Status</option>
-                                <option value="accepted">Accept Order</option>
-                                <option value="packed">Mark Packed</option>
-                                <option value="shipped">Mark Shipped</option>
-                            </select>
-                        </td>
+                        <td>${action}</td>
                     </tr>
-                `).join('');
+                `}).join('');
             } catch (err) {}
         }
 
         async function updateOrderStatus(orderId, newStatus) {
             if (!newStatus) return;
             try {
-                await api(`/orders/${orderId}/status`, 'PATCH', { status: newStatus });
+                await api(`/seller/orders/${orderId}/status`, 'PATCH', { status: newStatus });
                 notify(`Order #${orderId} set to ${newStatus}`);
                 loadOrders();
             } catch (err) {}

@@ -95,8 +95,10 @@ router.patch(
 router.get('/orders', adminController.getAllOrders);
 router.post('/orders/manual', adminController.createManualOrder);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
+router.patch('/orders/:id/address', adminController.updateOrderAddress);
 router.get('/returns', adminController.getAllReturns);
 router.post('/returns/manual', adminController.createManualReturn);
+router.patch('/returns/:id/status', adminController.updateReturnStatus);
 router.get('/wholesale/orders', wholesaleController.getAdminWholesaleOrders);
 router.post('/wholesale/orders/:id/accept', wholesaleController.acceptWholesaleOrderByAdmin);
 router.patch('/wholesale/orders/:id/status', wholesaleController.reviewWholesaleOrderByAdmin);

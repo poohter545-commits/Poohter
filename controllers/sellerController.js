@@ -5,6 +5,8 @@ const { JWT_SECRET } = require('../config/auth');
 const { getPayoutSummary } = require('../utils/sellerPayouts');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
+const { LEGACY_ORDER_STATUS_ALIASES } = require('../utils/orderIdentity');
+const { ensureOrderChargeColumns } = require('../utils/orderCharges');
 
 /**
  * Helper to generate JWT for Sellers
@@ -285,6 +287,7 @@ const createProduct = async (req, res, next) => {
     const videoPath = publicUploadPath(productVideo);
 
     await client.query('BEGIN');
+    await ensureOrderChargeColumns(client);
     await ensureProductMetadataColumns(client);
     await persistUploadedFiles([...productImages, ...(productVideo ? [productVideo] : [])], client);
 
@@ -453,10 +456,10 @@ const updateSellerOrderStatus = async (req, res, next) => {
   const { id } = req.params;
   const { status } = req.body;
   const sellerId = req.user.id;
-  const allowedStatuses = ['shipped', 'delivered'];
+  const allowedStatuses = ['delivered'];
 
   if (!allowedStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Sellers can only mark orders as shipped or delivered' });
+    return res.status(400).json({ error: 'Sellers can only mark orders as delivered after warehouse dispatch' });
   }
 
   const client = await pool.connect();
@@ -480,11 +483,9 @@ const updateSellerOrderStatus = async (req, res, next) => {
     }
 
     const currentStatus = ownership.rows[0].status;
+    const normalizedCurrentStatus = LEGACY_ORDER_STATUS_ALIASES[currentStatus] || currentStatus;
     const validTransition =
-      (currentStatus === 'pending' && status === 'shipped') ||
-      (currentStatus === 'accepted' && status === 'shipped') ||
-      (currentStatus === 'packed' && status === 'shipped') ||
-      (currentStatus === 'shipped' && status === 'delivered');
+      normalizedCurrentStatus === 'out_from_warehouse' && status === 'delivered';
 
     if (!validTransition) {
       await client.query('ROLLBACK');
@@ -492,7 +493,7 @@ const updateSellerOrderStatus = async (req, res, next) => {
     }
 
     const result = await client.query(
-      'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+      'UPDATE orders SET status = $1, delivered_at = COALESCE(delivered_at, NOW()) WHERE id = $2 RETURNING *',
       [status, id]
     );
 

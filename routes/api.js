@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getOrders, checkout, updateOrderStatus, deliveryUpdate } = require('../controllers/orderController');
+const { getOrders, checkout, updateOrderStatus, deliveryUpdate, warehouseScan, requestReturn } = require('../controllers/orderController');
 const { addToCart, getCart, removeFromCart, clearCart } = require('../controllers/cartController');
 const {
   signup,
@@ -47,7 +47,9 @@ router.post('/checkout', authMiddleware, checkout);
 
 // Order Tracking & Delivery Status
 router.patch('/orders/:id/status', authMiddleware, updateOrderStatus);
+router.post('/orders/:id/return-request', authMiddleware, requestReturn);
 router.post('/delivery/update', authMiddleware, deliveryUpdate);
+router.post('/orders/warehouse-scan', warehouseScan);
 
 module.exports = router;
 

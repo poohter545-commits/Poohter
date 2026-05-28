@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { JWT_SECRET } = require('../config/auth');
 const { createEmailOtp, normalizeEmail, resendEmailOtp, verifyEmailOtp } = require('../utils/emailOtp');
+const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
 
 const PASSWORD_REGEX = /^(?=.*[0-9])(?=.*[!@#$%^&*(),.?":{}|<>]).*$/;
 
@@ -78,6 +79,7 @@ const signup = async (req, res, next) => {
       return res.status(400).json({ error: 'Name, email, password, confirm password, phone, and address are required' });
     }
 
+    const normalizedPhone = requirePakistaniMobileNumber(phone);
     const passwordError = validatePassword(password, confirmPassword);
     if (passwordError) return res.status(400).json({ error: passwordError });
 
@@ -97,7 +99,7 @@ const signup = async (req, res, next) => {
         name,
         email: cleanEmail,
         password_hash: hashedPassword,
-        phone,
+        phone: normalizedPhone,
         address,
         role: 'buyer',
       },
@@ -164,18 +166,20 @@ const verifySignup = async (req, res, next) => {
       });
     }
 
+    const normalizedPhone = requirePakistaniMobileNumber(pendingUser.phone);
+
     const userExists = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [cleanEmail]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
     const result = await pool.query(
-      'INSERT INTO users (name, email, password, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role',
+      'INSERT INTO users (name, email, password, phone, address, role) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, address, role',
       [
         pendingUser.name,
         pendingUser.email,
         pendingUser.password_hash,
-        pendingUser.phone,
+        normalizedPhone,
         pendingUser.address,
         'buyer',
       ]
@@ -246,7 +250,7 @@ const login = async (req, res, next) => {
     // 4. Send response (preventing the hang)
     res.status(200).json({
       message: 'Login successful',
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, address: user.address, role: user.role },
       token: signUserToken(user)
     });
   } catch (error) {
@@ -365,13 +369,14 @@ const updateUserProfile = async (req, res, next) => {
     if (!name || !String(name).trim()) {
       return res.status(400).json({ error: 'Name is required' });
     }
+    const normalizedPhone = requirePakistaniMobileNumber(phone);
 
     const result = await pool.query(
       `UPDATE users
        SET name = $1, phone = $2, address = $3
        WHERE id = $4
        RETURNING id, name, email, phone, address, role, created_at`,
-      [String(name).trim(), phone || null, address || null, requestedUserId]
+      [String(name).trim(), normalizedPhone, address || null, requestedUserId]
     );
 
     if (result.rows.length === 0) {

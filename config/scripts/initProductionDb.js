@@ -3,6 +3,7 @@ const { ensureWholesaleTables } = require('../../utils/wholesaleFlow');
 const { ensureSellerPayoutTables } = require('../../utils/sellerPayouts');
 const { ensureSalesPlatformsTable } = require('../../utils/salesPlatforms');
 const { ensureEmailOtpTable } = require('../../utils/emailOtp');
+const { ensureOrderChargeColumns } = require('../../utils/orderCharges');
 
 const ensureCoreTables = async (clientOrPool) => {
   await ensureWholesaleTables(clientOrPool);
@@ -59,6 +60,7 @@ const ensureCoreTables = async (clientOrPool) => {
   await ensureSalesPlatformsTable(clientOrPool);
   await ensureSellerPayoutTables(clientOrPool);
   await ensureEmailOtpTable(clientOrPool);
+  await ensureOrderChargeColumns(clientOrPool);
 };
 
 const initProductionDb = async () => {
