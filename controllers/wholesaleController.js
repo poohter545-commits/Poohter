@@ -193,7 +193,12 @@ const registerWholesaler = async (req, res, next) => {
       return res.status(400).json({ error: 'A wholesaler with this email or CNIC already exists' });
     }
 
+    const cnicFrontFile = req.files?.cnic_front?.[0];
+    const cnicBackFile = req.files?.cnic_back?.[0];
+    const cnic_front = publicUploadPath(cnicFrontFile);
+    const cnic_back = publicUploadPath(cnicBackFile);
     const hashedPassword = await bcrypt.hash(password, 10);
+    await persistUploadedFiles([cnicFrontFile, cnicBackFile].filter(Boolean), pool);
     await createEmailOtp({
       email: cleanEmail,
       purpose: 'signup',
@@ -209,8 +214,8 @@ const registerWholesaler = async (req, res, next) => {
         warehouse_address: textValue(warehouse_address) || textValue(city),
         city: textValue(city),
         cnic_number: textValue(cnic_number),
-        cnic_front: publicUploadPath(req.files?.cnic_front?.[0]),
-        cnic_back: publicUploadPath(req.files?.cnic_back?.[0]),
+        cnic_front,
+        cnic_back,
         bank_name: textValue(bank_name),
         account_title: textValue(account_title),
         account_number: textValue(account_number),

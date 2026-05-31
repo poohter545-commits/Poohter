@@ -79,8 +79,10 @@ const register = async (req, res, next) => {
     } = req.body;
 
     // Get file paths from multer
-    const cnic_front = publicUploadPath(req.files?.cnic_front?.[0]);
-    const cnic_back = publicUploadPath(req.files?.cnic_back?.[0]);
+    const cnicFrontFile = req.files?.cnic_front?.[0];
+    const cnicBackFile = req.files?.cnic_back?.[0];
+    const cnic_front = publicUploadPath(cnicFrontFile);
+    const cnic_back = publicUploadPath(cnicBackFile);
 
     // Server-side validation for mandatory fields
     const requiredFields = [
@@ -113,6 +115,7 @@ const register = async (req, res, next) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    await persistUploadedFiles([cnicFrontFile, cnicBackFile].filter(Boolean), pool);
     await createEmailOtp({
       email: cleanEmail,
       purpose: 'signup',

@@ -12,6 +12,8 @@ const {
 } = require('../utils/orderCharges');
 const { sendOrderStatusEmailSafely } = require('../utils/orderNotifications');
 const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
+const { ensureSupportRequestsTable } = require('../utils/supportRequests');
+const { ensureWarehouseReceivingTable } = require('../utils/warehouseReceiving');
 const {
   createReturnCode,
   ensureReturnsTable: ensureReturnRequestTable,
@@ -158,6 +160,19 @@ const ensureReturnsTable = async (clientOrPool = pool) => {
   await ensureReturnRequestTable(clientOrPool);
 };
 
+const hasWarehouseReceiptScan = async (clientOrPool, productId) => {
+  await ensureWarehouseReceivingTable(clientOrPool);
+  const result = await clientOrPool.query(
+    `SELECT 1
+     FROM warehouse_receiving_scans
+     WHERE product_id = $1
+       AND status NOT IN ('rejected', 'needs_correction')
+     LIMIT 1`,
+    [productId]
+  );
+  return result.rows.length > 0;
+};
+
 const login = async (req, res) => {
   const { password } = req.body;
   const allowedPasswords = new Set([
@@ -179,6 +194,8 @@ const login = async (req, res) => {
 const getDashboardStats = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
+    await ensureSupportRequestsTable(pool);
+    await ensureWarehouseReceivingTable(pool);
     const [
       userCount,
       sellerCount,
@@ -188,7 +205,9 @@ const getDashboardStats = async (req, res, next) => {
       lowStock,
       wholesalerCount,
       pendingWholesalers,
-      pendingWholesaleOrders
+      pendingWholesaleOrders,
+      pendingSupportRequests,
+      scannedInventory
     ] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query('SELECT COUNT(*) FROM sellers'),
@@ -198,7 +217,9 @@ const getDashboardStats = async (req, res, next) => {
       pool.query('SELECT COUNT(*) FROM inventory WHERE stock_quantity <= 5'),
       pool.query('SELECT COUNT(*) FROM wholesalers'),
       pool.query("SELECT COUNT(*) FROM wholesalers WHERE status = 'pending'"),
-      pool.query("SELECT COUNT(*) FROM wholesale_orders WHERE status = 'admin_review'")
+      pool.query("SELECT COUNT(*) FROM wholesale_orders WHERE status = 'admin_review'"),
+      pool.query("SELECT COUNT(*) FROM support_requests WHERE status = 'pending'"),
+      pool.query("SELECT COUNT(*) FROM warehouse_receiving_scans WHERE status IN ('scanned', 'pending_review')")
     ]);
 
     res.status(200).json({
@@ -210,7 +231,9 @@ const getDashboardStats = async (req, res, next) => {
       low_stock: parseInt(lowStock.rows[0].count, 10),
       total_wholesalers: parseInt(wholesalerCount.rows[0].count, 10),
       pending_wholesalers: parseInt(pendingWholesalers.rows[0].count, 10),
-      pending_wholesale_orders: parseInt(pendingWholesaleOrders.rows[0].count, 10)
+      pending_wholesale_orders: parseInt(pendingWholesaleOrders.rows[0].count, 10),
+      pending_support_requests: parseInt(pendingSupportRequests.rows[0].count, 10),
+      scanned_inventory: parseInt(scannedInventory.rows[0].count, 10)
     });
   } catch (error) {
     next(error);
@@ -401,6 +424,14 @@ const updateProductStatus = async (req, res, next) => {
 
     await ensureProductWorkflowColumns();
     const nextStatus = status === 'approved' ? 'pending_sending' : status;
+    if (['warehouse_received', 'topteam_pending', 'live'].includes(nextStatus)) {
+      const scanned = await hasWarehouseReceiptScan(pool, id);
+      if (!scanned) {
+        return res.status(400).json({
+          error: 'Scan the product receipt in the Tracking app before changing warehouse status or sending this product to Top Team.',
+        });
+      }
+    }
 
     const result = await pool.query(
       `UPDATE products
@@ -450,6 +481,13 @@ const finalizeWarehouseProduct = async (req, res, next) => {
     if (existing.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Product not found' });
+    }
+    const scanned = await hasWarehouseReceiptScan(client, id);
+    if (!scanned) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Scan the product receipt in the Tracking app before editing warehouse details or sending this product to Top Team.',
+      });
     }
     const sellerSubmittedPrice = Number(existing.rows[0].price || existing.rows[0].admin_price || 0);
     if (parsedPrice > sellerSubmittedPrice + 0.01) {
