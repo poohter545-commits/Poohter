@@ -162,7 +162,16 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS topteam_reported_by TEXT,
       ADD COLUMN IF NOT EXISTS topteam_reviewed_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS ban_reason TEXT,
-      ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP
+      ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS cnic_update_status TEXT DEFAULT 'clear',
+      ADD COLUMN IF NOT EXISTS cnic_update_requested_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS cnic_update_requested_by TEXT,
+      ADD COLUMN IF NOT EXISTS cnic_update_note TEXT,
+      ADD COLUMN IF NOT EXISTS pending_cnic_front TEXT,
+      ADD COLUMN IF NOT EXISTS pending_cnic_back TEXT,
+      ADD COLUMN IF NOT EXISTS pending_cnic_uploaded_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS cnic_update_reviewed_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS cnic_update_rejection_reason TEXT
   `);
 
   await clientOrPool.query(`

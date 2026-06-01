@@ -5,6 +5,10 @@ const { JWT_SECRET } = require('../config/auth');
 const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/emailOtp');
 const { ensureStoredUploadsTable, persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
 const {
+  ensureCnicUpdateColumns,
+  normalizeCnicUpdateFields,
+} = require('../utils/cnicUpdates');
+const {
   createCode,
   ensureWholesaleTables,
   normalizeWholesaler,
@@ -71,6 +75,7 @@ const publicWholesaler = (row) => ({
   banned_at: row.banned_at,
   approved_at: row.approved_at,
   created_at: row.created_at,
+  ...normalizeCnicUpdateFields(row),
 });
 
 const normalizeWholesaleProductUploads = (row) => {
@@ -317,6 +322,7 @@ const loginWholesaler = async (req, res, next) => {
 const getWholesalerProfile = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
+    await ensureCnicUpdateColumns(pool, 'wholesalers');
     const result = await pool.query('SELECT * FROM wholesalers WHERE id = $1', [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler profile not found' });
     if (result.rows[0].status === 'banned') {
@@ -325,6 +331,68 @@ const getWholesalerProfile = async (req, res, next) => {
     res.json({ wholesaler: publicWholesaler(result.rows[0]) });
   } catch (error) {
     next(error);
+  }
+};
+
+const uploadWholesalerCnicUpdate = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const wholesalerId = req.user.id;
+    const cnicFrontFile = req.files?.cnic_front?.[0];
+    const cnicBackFile = req.files?.cnic_back?.[0];
+
+    if (!cnicFrontFile || !cnicBackFile) {
+      return res.status(400).json({ error: 'Upload both front and back CNIC images.' });
+    }
+
+    const pendingFront = publicUploadPath(cnicFrontFile);
+    const pendingBack = publicUploadPath(cnicBackFile);
+
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+    await ensureCnicUpdateColumns(client, 'wholesalers');
+    await persistUploadedFiles([cnicFrontFile, cnicBackFile], client);
+
+    const current = await client.query(
+      `SELECT id, cnic_update_status
+       FROM wholesalers
+       WHERE id = $1
+       FOR UPDATE`,
+      [wholesalerId]
+    );
+    if (!current.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesaler profile not found' });
+    }
+
+    const allowed = ['requested', 'rejected', 'uploaded'];
+    if (!allowed.includes(current.rows[0].cnic_update_status || 'clear')) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Admin has not requested a CNIC update for this account.' });
+    }
+
+    const result = await client.query(
+      `UPDATE wholesalers
+       SET pending_cnic_front = $1,
+           pending_cnic_back = $2,
+           pending_cnic_uploaded_at = NOW(),
+           cnic_update_status = 'uploaded',
+           cnic_update_rejection_reason = NULL
+       WHERE id = $3
+       RETURNING *`,
+      [pendingFront, pendingBack, wholesalerId]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      message: 'CNIC images uploaded for admin review. Your current approved CNIC remains active until approval.',
+      wholesaler: publicWholesaler(result.rows[0]),
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -1218,25 +1286,6 @@ const updateAdminWholesalerStatus = async (req, res, next) => {
     if (!['approved', 'rejected', 'pending'].includes(status)) {
       return res.status(400).json({ error: 'Invalid wholesaler status' });
     }
-    if (status === 'rejected') {
-      const result = await pool.query(
-        `DELETE FROM wholesalers
-         WHERE id = $1
-         RETURNING id, cnic_number, name, email, shop_name`,
-        [req.params.id]
-      );
-
-      if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler not found' });
-
-      return res.json({
-        wholesaler: {
-          ...publicWholesaler({ ...result.rows[0], status: 'rejected' }),
-          deleted: true,
-        },
-        message: 'Wholesaler application rejected and removed. Wholesaler can register again with fresh details.',
-      });
-    }
-
     const result = await pool.query(
       `UPDATE wholesalers
        SET status = $1,
@@ -1247,9 +1296,108 @@ const updateAdminWholesalerStatus = async (req, res, next) => {
       [status, reason || null, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler not found' });
-    res.json({ wholesaler: publicWholesaler(result.rows[0]) });
+    res.json({
+      wholesaler: publicWholesaler(result.rows[0]),
+      message: status === 'rejected'
+        ? 'Wholesaler application rejected and moved out of active admin queues.'
+        : undefined,
+    });
   } catch (error) {
     next(error);
+  }
+};
+
+const requestWholesalerCnicUpdate = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    await ensureCnicUpdateColumns(pool, 'wholesalers');
+    const note = textValue(req.body.note);
+    const result = await pool.query(
+      `UPDATE wholesalers
+       SET cnic_update_status = 'requested',
+           cnic_update_requested_at = NOW(),
+           cnic_update_requested_by = $1,
+           cnic_update_note = $2,
+           cnic_update_rejection_reason = NULL
+       WHERE id = $3
+       RETURNING *`,
+      [String(req.user?.email || req.user?.id || 'admin'), note || null, req.params.id]
+    );
+
+    if (!result.rows.length) return res.status(404).json({ error: 'Wholesaler not found' });
+    res.json({
+      message: 'CNIC update requested. Wholesaler will see the request in their dashboard.',
+      wholesaler: publicWholesaler(result.rows[0]),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const reviewWholesalerCnicUpdate = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const status = textValue(req.body.status).toLowerCase();
+    const reason = textValue(req.body.reason);
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'CNIC update review status must be approved or rejected.' });
+    }
+
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+    await ensureCnicUpdateColumns(client, 'wholesalers');
+
+    const current = await client.query(
+      `SELECT id, pending_cnic_front, pending_cnic_back
+       FROM wholesalers
+       WHERE id = $1
+       FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!current.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesaler not found' });
+    }
+    if (!current.rows[0].pending_cnic_front || !current.rows[0].pending_cnic_back) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Wholesaler has not uploaded new CNIC images yet.' });
+    }
+
+    const result = status === 'approved'
+      ? await client.query(
+        `UPDATE wholesalers
+         SET cnic_front = pending_cnic_front,
+             cnic_back = pending_cnic_back,
+             pending_cnic_front = NULL,
+             pending_cnic_back = NULL,
+             pending_cnic_uploaded_at = NULL,
+             cnic_update_status = 'approved',
+             cnic_update_reviewed_at = NOW(),
+             cnic_update_rejection_reason = NULL
+         WHERE id = $1
+         RETURNING *`,
+        [req.params.id]
+      )
+      : await client.query(
+        `UPDATE wholesalers
+         SET cnic_update_status = 'rejected',
+             cnic_update_reviewed_at = NOW(),
+             cnic_update_rejection_reason = $1
+         WHERE id = $2
+         RETURNING *`,
+        [reason || 'CNIC images need correction', req.params.id]
+      );
+
+    await client.query('COMMIT');
+    res.json({
+      message: status === 'approved' ? 'Wholesaler CNIC update approved.' : 'Wholesaler CNIC update rejected.',
+      wholesaler: publicWholesaler(result.rows[0]),
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -1342,6 +1490,7 @@ module.exports = {
   verifyWholesalerRegistration,
   loginWholesaler,
   getWholesalerProfile,
+  uploadWholesalerCnicUpdate,
   createWholesalerProduct,
   getMyWholesaleProducts,
   updateMyWholesaleProduct,
@@ -1361,6 +1510,8 @@ module.exports = {
   deleteAdminWholesaleProduct,
   getAdminWholesalers,
   updateAdminWholesalerStatus,
+  requestWholesalerCnicUpdate,
+  reviewWholesalerCnicUpdate,
   reportWholesalerToTopTeam,
   getAdminWholesaleOrders,
   reviewWholesaleOrderByAdmin,

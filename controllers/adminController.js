@@ -15,6 +15,11 @@ const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
 const { ensureSupportRequestsTable } = require('../utils/supportRequests');
 const { ensureWarehouseReceivingTable } = require('../utils/warehouseReceiving');
 const {
+  ensureCnicUpdateColumns,
+  cnicUpdateSelectFields,
+  normalizeCnicUpdateFields,
+} = require('../utils/cnicUpdates');
+const {
   createReturnCode,
   ensureReturnsTable: ensureReturnRequestTable,
   getReturnWindow,
@@ -45,6 +50,7 @@ const ensureSellerReviewColumns = async () => {
       ADD COLUMN IF NOT EXISTS rejected_reason TEXT,
       ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP
   `);
+  await ensureCnicUpdateColumns(pool, 'sellers');
 };
 
 const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
@@ -87,10 +93,11 @@ const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
   `);
 };
 
-const ensureProductWorkflowColumns = async () => {
-  await pool.query(`
+const ensureProductWorkflowColumns = async (clientOrPool = pool) => {
+  await clientOrPool.query(`
     ALTER TABLE products
       ADD COLUMN IF NOT EXISTS name_urdu TEXT,
+      ADD COLUMN IF NOT EXISTS category TEXT,
       ADD COLUMN IF NOT EXISTS expected_stock INTEGER DEFAULT 0,
       ADD COLUMN IF NOT EXISTS admin_media_required BOOLEAN DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS image_url TEXT,
@@ -100,9 +107,11 @@ const ensureProductWorkflowColumns = async () => {
       ADD COLUMN IF NOT EXISTS warehouse_received_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS live_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS admin_price NUMERIC(12,2),
-      ADD COLUMN IF NOT EXISTS topteam_priced_at TIMESTAMP
+      ADD COLUMN IF NOT EXISTS topteam_priced_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS deleted_by TEXT
   `);
-  await pool.query(`
+  await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS product_media (
       id SERIAL PRIMARY KEY,
       product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -111,8 +120,8 @@ const ensureProductWorkflowColumns = async () => {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  await ensureSalesPlatformsTable(pool);
-  await pool.query(`
+  await ensureSalesPlatformsTable(clientOrPool);
+  await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS product_platform_pricing (
       id SERIAL PRIMARY KEY,
       product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -126,12 +135,12 @@ const ensureProductWorkflowColumns = async () => {
       UNIQUE(product_id, platform_id)
     )
   `);
-  await pool.query(`
+  await clientOrPool.query(`
     ALTER TABLE product_platform_pricing
       ADD COLUMN IF NOT EXISTS delivery_charge NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_DELIVERY_CHARGE},
       ADD COLUMN IF NOT EXISTS packing_material_cost NUMERIC(12,2) NOT NULL DEFAULT ${DEFAULT_PACKING_MATERIAL_COST}
   `);
-  await pool.query(`
+  await clientOrPool.query(`
     DO $$
     DECLARE constraint_row record;
     BEGIN
@@ -146,7 +155,7 @@ const ensureProductWorkflowColumns = async () => {
       END LOOP;
     END $$;
   `);
-  await pool.query(`
+  await clientOrPool.query(`
     UPDATE products
     SET status = 'pending_sending',
         product_uid = COALESCE(product_uid, 'PHT-' || LPAD(id::text, 6, '0')),
@@ -258,7 +267,7 @@ const getAllSellers = async (req, res, next) => {
       `SELECT id, cnic_number AS seller_id, name, email, phone, shop_name, business_type,
         warehouse_address, city, cnic_number, bank_name, account_title, account_number,
         mobile_wallet, cnic_front, cnic_back, status, rejected_reason, created_at,
-        password_changed_at
+        password_changed_at, ${cnicUpdateSelectFields}
        FROM sellers
        ORDER BY created_at DESC`
     );
@@ -266,9 +275,108 @@ const getAllSellers = async (req, res, next) => {
       ...seller,
       cnic_front: publicUploadPathFromValue(seller.cnic_front) || null,
       cnic_back: publicUploadPathFromValue(seller.cnic_back) || null,
+      ...normalizeCnicUpdateFields(seller),
     })));
   } catch (error) {
     next(error);
+  }
+};
+
+const requestSellerCnicUpdate = async (req, res, next) => {
+  try {
+    await ensureSellerReviewColumns();
+    const note = String(req.body.note || '').trim();
+    const result = await pool.query(
+      `UPDATE sellers
+       SET cnic_update_status = 'requested',
+           cnic_update_requested_at = NOW(),
+           cnic_update_requested_by = $1,
+           cnic_update_note = $2,
+           cnic_update_rejection_reason = NULL
+       WHERE id = $3
+       RETURNING id, name, email, shop_name, status, ${cnicUpdateSelectFields}`,
+      [String(req.user?.email || req.user?.id || 'admin'), note || null, req.params.id]
+    );
+
+    if (!result.rows.length) return res.status(404).json({ error: 'Seller not found' });
+    res.json({
+      message: 'CNIC update requested. Seller will see the request in their dashboard.',
+      seller: { ...result.rows[0], ...normalizeCnicUpdateFields(result.rows[0]) },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const reviewSellerCnicUpdate = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const status = String(req.body.status || '').trim().toLowerCase();
+    const reason = String(req.body.reason || '').trim();
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'CNIC update review status must be approved or rejected.' });
+    }
+
+    await client.query('BEGIN');
+    await ensureCnicUpdateColumns(client, 'sellers');
+
+    const current = await client.query(
+      `SELECT id, pending_cnic_front, pending_cnic_back, cnic_update_status
+       FROM sellers
+       WHERE id = $1
+       FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!current.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    if (!current.rows[0].pending_cnic_front || !current.rows[0].pending_cnic_back) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Seller has not uploaded new CNIC images yet.' });
+    }
+
+    const result = status === 'approved'
+      ? await client.query(
+        `UPDATE sellers
+         SET cnic_front = pending_cnic_front,
+             cnic_back = pending_cnic_back,
+             pending_cnic_front = NULL,
+             pending_cnic_back = NULL,
+             pending_cnic_uploaded_at = NULL,
+             cnic_update_status = 'approved',
+             cnic_update_reviewed_at = NOW(),
+             cnic_update_rejection_reason = NULL
+         WHERE id = $1
+         RETURNING id, name, email, shop_name, status, cnic_front, cnic_back, ${cnicUpdateSelectFields}`,
+        [req.params.id]
+      )
+      : await client.query(
+        `UPDATE sellers
+         SET cnic_update_status = 'rejected',
+             cnic_update_reviewed_at = NOW(),
+             cnic_update_rejection_reason = $1
+         WHERE id = $2
+         RETURNING id, name, email, shop_name, status, cnic_front, cnic_back, ${cnicUpdateSelectFields}`,
+        [reason || 'CNIC images need correction', req.params.id]
+      );
+
+    await client.query('COMMIT');
+    const seller = result.rows[0];
+    res.json({
+      message: status === 'approved' ? 'Seller CNIC update approved.' : 'Seller CNIC update rejected.',
+      seller: {
+        ...seller,
+        cnic_front: publicUploadPathFromValue(seller.cnic_front) || null,
+        cnic_back: publicUploadPathFromValue(seller.cnic_back) || null,
+        ...normalizeCnicUpdateFields(seller),
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -290,28 +398,6 @@ const updateSellerStatus = async (req, res, next) => {
     }
 
     await ensureSellerReviewColumns();
-    if (status === 'rejected') {
-      const result = await pool.query(
-        `DELETE FROM sellers
-         WHERE id = $1
-         RETURNING id, cnic_number AS seller_id, name, email, shop_name`,
-        [id]
-      );
-
-      if (result.rows.length === 0) {
-        return res.status(404).json({ error: 'Seller not found' });
-      }
-
-      return res.status(200).json({
-        seller: {
-          ...result.rows[0],
-          status: 'rejected',
-          deleted: true,
-        },
-        message: 'Seller application rejected and removed. Seller can register again with fresh details.',
-      });
-    }
-
     const result = await pool.query(
       `UPDATE sellers
        SET status = $1::text,
@@ -326,7 +412,12 @@ const updateSellerStatus = async (req, res, next) => {
       return res.status(404).json({ error: 'Seller not found' });
     }
 
-    res.json({ seller: result.rows[0] });
+    res.json({
+      seller: result.rows[0],
+      message: status === 'rejected'
+        ? 'Seller application rejected and moved out of active admin queues.'
+        : undefined,
+    });
   } catch (error) {
     next(error);
   }
@@ -334,9 +425,9 @@ const updateSellerStatus = async (req, res, next) => {
 
 const getAllProducts = async (req, res, next) => {
   try {
-    await ensureProductWorkflowColumns();
+    await ensureProductWorkflowColumns(pool);
     const result = await pool.query(
-      `SELECT p.id, p.product_uid, p.receipt_code, p.name, p.name_urdu, p.price, p.admin_price, p.description, p.image_url, p.created_at,
+      `SELECT p.id, p.product_uid, p.receipt_code, p.name, p.name_urdu, p.category, p.price, p.admin_price, p.description, p.image_url, p.created_at,
         p.expected_stock, p.admin_media_required,
         p.status, p.rejection_reason, p.warehouse_received_at, p.live_at, p.topteam_priced_at, p.seller_id,
         s.shop_name, s.name AS seller_name, s.cnic_number AS public_seller_id,
@@ -380,6 +471,7 @@ const getAllProducts = async (req, res, next) => {
          JOIN sales_platforms sp ON ppp.platform_id = sp.id
          GROUP BY ppp.product_id
        ) platforms ON p.id = platforms.product_id
+       WHERE p.deleted_at IS NULL
        ORDER BY p.created_at DESC`
     );
 
@@ -422,7 +514,7 @@ const updateProductStatus = async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid product status' });
     }
 
-    await ensureProductWorkflowColumns();
+    await ensureProductWorkflowColumns(pool);
     const nextStatus = status === 'approved' ? 'pending_sending' : status;
     if (['warehouse_received', 'topteam_pending', 'live'].includes(nextStatus)) {
       const scanned = await hasWarehouseReceiptScan(pool, id);
@@ -466,16 +558,21 @@ const finalizeWarehouseProduct = async (req, res, next) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const { name, name_urdu, description, price, stock } = req.body;
+    const { name, name_urdu, category, description, price, stock } = req.body;
+    const sendToTopTeam = ['true', '1', 'on', true].includes(req.body.send_to_topteam);
     const parsedPrice = Number(price);
     const parsedStock = Number(stock);
 
-    if (!name || !description || !Number.isFinite(parsedPrice) || parsedPrice < 0 || !Number.isFinite(parsedStock) || parsedStock < 0) {
-      return res.status(400).json({ error: 'Name, description, non-negative admin price, and non-negative stock are required' });
+    if (!name || !Number.isFinite(parsedPrice) || parsedPrice < 0 || !Number.isFinite(parsedStock) || parsedStock < 0) {
+      return res.status(400).json({ error: 'Name, non-negative admin price, and non-negative stock are required' });
+    }
+
+    if (sendToTopTeam && !String(description || '').trim()) {
+      return res.status(400).json({ error: 'Description is required before sending this product to Top Team.' });
     }
 
     await client.query('BEGIN');
-    await ensureProductWorkflowColumns();
+    await ensureProductWorkflowColumns(client);
 
     const existing = await client.query('SELECT id, price, admin_price FROM products WHERE id = $1 FOR UPDATE', [id]);
     if (existing.rows.length === 0) {
@@ -528,7 +625,7 @@ const finalizeWarehouseProduct = async (req, res, next) => {
       [id]
     );
 
-    if (Number(mediaCount.rows[0].image_count) < 5 || Number(mediaCount.rows[0].video_count) < 1) {
+    if (sendToTopTeam && (Number(mediaCount.rows[0].image_count) < 5 || Number(mediaCount.rows[0].video_count) < 1)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Five product images and one 10 second MP4 video are required before going live' });
     }
@@ -545,25 +642,41 @@ const finalizeWarehouseProduct = async (req, res, next) => {
       `UPDATE products
        SET name = $1,
            name_urdu = $2,
-           description = $3,
-           admin_price = $4,
-           stock = $5,
+           category = $3,
+           description = $4,
+           admin_price = $5,
+           stock = $6,
            image_url = COALESCE(
              NULLIF(image_url, ''),
-             $6,
+             $7,
              (SELECT pm.file_path FROM product_media pm WHERE pm.product_id = products.id AND pm.type = 'image' ORDER BY pm.created_at, pm.id LIMIT 1)
            ),
-           status = 'topteam_pending',
+           status = CASE WHEN $9::boolean THEN 'topteam_pending' ELSE 'warehouse_received' END,
            warehouse_received_at = COALESCE(warehouse_received_at, NOW()),
            live_at = NULL,
-           topteam_priced_at = NULL
-       WHERE id = $7
+           topteam_priced_at = CASE WHEN $9::boolean THEN NULL ELSE topteam_priced_at END
+       WHERE id = $8
        RETURNING *`,
-      [name.trim(), (name_urdu || '').trim(), description.trim(), parsedPrice, parsedStock, imagePaths[0] || null, id]
+      [
+        name.trim(),
+        (name_urdu || '').trim(),
+        String(category || '').trim() || null,
+        String(description || '').trim() || null,
+        parsedPrice,
+        parsedStock,
+        imagePaths[0] || null,
+        id,
+        sendToTopTeam,
+      ]
     );
 
     await client.query('COMMIT');
-    res.json({ product: result.rows[0] });
+    res.json({
+      product: result.rows[0],
+      message: sendToTopTeam
+        ? 'Product details completed and sent to Top Team pricing.'
+        : 'Warehouse product details saved. Product remains received in warehouse until admin completes setup.',
+    });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
@@ -600,6 +713,55 @@ const updateProductStock = async (req, res, next) => {
     res.json({ inventory: result.rows[0] });
   } catch (error) {
     next(error);
+  }
+};
+
+const deleteProductById = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const productId = req.params.id;
+
+    await client.query('BEGIN');
+    await ensureProductWorkflowColumns(client);
+
+    const productResult = await client.query(
+      `SELECT id, name, product_uid, status
+       FROM products
+       WHERE id = $1
+         AND deleted_at IS NULL
+       FOR UPDATE`,
+      [productId]
+    );
+
+    if (productResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Product not found or already deleted.' });
+    }
+
+    const product = productResult.rows[0];
+    await client.query('DELETE FROM inventory WHERE product_id = $1', [product.id]);
+    await client.query('DELETE FROM product_platform_pricing WHERE product_id = $1', [product.id]);
+    const result = await client.query(
+      `UPDATE products
+       SET status = 'deleted',
+           deleted_at = NOW(),
+           deleted_by = $1,
+           live_at = NULL
+       WHERE id = $2
+       RETURNING id, product_uid, name, status, deleted_at`,
+      [String(req.user?.email || req.user?.id || 'admin'), product.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      message: `Product "${product.name}" was deleted safely.`,
+      product: result.rows[0],
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -1209,10 +1371,13 @@ module.exports = {
   getAllSellers,
   getPlatforms,
   updateSellerStatus,
+  requestSellerCnicUpdate,
+  reviewSellerCnicUpdate,
   getAllProducts,
   updateProductStatus,
   finalizeWarehouseProduct,
   updateProductStock,
+  deleteProductById,
   getAllOrders,
   updateOrderStatus,
   recordOrderPayment,

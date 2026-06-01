@@ -64,6 +64,14 @@ router.post('/login', wholesaleController.loginWholesaler);
 router.use(authMiddleware, isWholesaler);
 
 router.get('/profile', wholesaleController.getWholesalerProfile);
+router.post(
+  '/cnic-update',
+  upload.fields([
+    { name: 'cnic_front', maxCount: 1 },
+    { name: 'cnic_back', maxCount: 1 }
+  ]),
+  wholesaleController.uploadWholesalerCnicUpdate
+);
 router.get('/products', wholesaleController.getMyWholesaleProducts);
 router.post('/products', uploadWholesaleProductImages, wholesaleController.createWholesalerProduct);
 router.patch('/products/:id', wholesaleController.updateMyWholesaleProduct);

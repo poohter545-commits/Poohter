@@ -27,6 +27,16 @@ services:
         value: poohter545@gmail.com
       - key: OTP_SECRET
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKETS
+        value: product-images,products,uploads,images
+      - key: SUPABASE_SIGNED_URL_TTL_SECONDS
+        value: 3600
       - key: CORS_ORIGINS
         value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com
       - key: PUBLIC_API_URL

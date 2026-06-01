@@ -71,7 +71,11 @@ router.get('/sellers', adminController.getAllSellers);
 router.get('/wholesalers', wholesaleController.getAdminWholesalers);
 router.get('/platforms', adminController.getPlatforms);
 router.patch('/sellers/:id/status', adminController.updateSellerStatus);
+router.post('/sellers/:id/cnic-update-request', adminController.requestSellerCnicUpdate);
+router.patch('/sellers/:id/cnic-update', adminController.reviewSellerCnicUpdate);
 router.patch('/wholesalers/:id/status', wholesaleController.updateAdminWholesalerStatus);
+router.post('/wholesalers/:id/cnic-update-request', wholesaleController.requestWholesalerCnicUpdate);
+router.patch('/wholesalers/:id/cnic-update', wholesaleController.reviewWholesalerCnicUpdate);
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
 router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
 router.patch(
@@ -88,6 +92,7 @@ router.delete('/wholesale/products/folder-data', wholesaleController.resetAllAdm
 router.delete('/wholesale/products/:id/folder-data', wholesaleController.resetAdminWholesaleProductFolderData);
 router.delete('/wholesale/products/:id', wholesaleController.deleteAdminWholesaleProduct);
 router.get('/products', adminController.getAllProducts);
+router.delete('/products/:id', adminController.deleteProductById);
 router.patch('/products/:id/status', adminController.updateProductStatus);
 router.patch('/products/:id/stock', adminController.updateProductStock);
 router.patch(

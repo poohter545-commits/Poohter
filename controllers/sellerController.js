@@ -7,6 +7,11 @@ const { createEmailOtp, normalizeEmail, verifyEmailOtp } = require('../utils/ema
 const { persistUploadedFiles, publicUploadPath } = require('../utils/uploads');
 const { LEGACY_ORDER_STATUS_ALIASES } = require('../utils/orderIdentity');
 const { ensureOrderChargeColumns } = require('../utils/orderCharges');
+const {
+  ensureCnicUpdateColumns,
+  cnicUpdateSelectFields,
+  normalizeCnicUpdateFields,
+} = require('../utils/cnicUpdates');
 
 /**
  * Helper to generate JWT for Sellers
@@ -251,11 +256,13 @@ const login = async (req, res, next) => {
 const getProfile = async (req, res, next) => {
   try {
     const sellerId = req.user.id;
+    await ensureCnicUpdateColumns(pool, 'sellers');
     const result = await pool.query(
       `SELECT 
         id, name, email, phone, shop_name, business_type, warehouse_address, city,
         cnic_number, bank_name, account_title, account_number, mobile_wallet,
-        status, created_at, approved_at, rejected_reason
+        status, created_at, approved_at, rejected_reason,
+        ${cnicUpdateSelectFields}
        FROM sellers
        WHERE id = $1`,
       [sellerId]
@@ -265,9 +272,70 @@ const getProfile = async (req, res, next) => {
       return res.status(404).json({ error: 'Seller profile not found' });
     }
 
-    res.json({ seller: result.rows[0] });
+    res.json({ seller: { ...result.rows[0], ...normalizeCnicUpdateFields(result.rows[0]) } });
   } catch (error) {
     next(error);
+  }
+};
+
+const uploadCnicUpdate = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const sellerId = req.user.id;
+    const cnicFrontFile = req.files?.cnic_front?.[0];
+    const cnicBackFile = req.files?.cnic_back?.[0];
+
+    if (!cnicFrontFile || !cnicBackFile) {
+      return res.status(400).json({ error: 'Upload both front and back CNIC images.' });
+    }
+
+    const pendingFront = publicUploadPath(cnicFrontFile);
+    const pendingBack = publicUploadPath(cnicBackFile);
+
+    await client.query('BEGIN');
+    await ensureCnicUpdateColumns(client, 'sellers');
+    await persistUploadedFiles([cnicFrontFile, cnicBackFile], client);
+
+    const current = await client.query(
+      `SELECT id, cnic_update_status
+       FROM sellers
+       WHERE id = $1
+       FOR UPDATE`,
+      [sellerId]
+    );
+    if (!current.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller profile not found' });
+    }
+
+    const allowed = ['requested', 'rejected', 'uploaded'];
+    if (!allowed.includes(current.rows[0].cnic_update_status || 'clear')) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Admin has not requested a CNIC update for this account.' });
+    }
+
+    const result = await client.query(
+      `UPDATE sellers
+       SET pending_cnic_front = $1,
+           pending_cnic_back = $2,
+           pending_cnic_uploaded_at = NOW(),
+           cnic_update_status = 'uploaded',
+           cnic_update_rejection_reason = NULL
+       WHERE id = $3
+       RETURNING id, ${cnicUpdateSelectFields}`,
+      [pendingFront, pendingBack, sellerId]
+    );
+
+    await client.query('COMMIT');
+    res.json({
+      message: 'CNIC images uploaded for admin review. Your current approved CNIC remains active until approval.',
+      cnic_update: normalizeCnicUpdateFields(result.rows[0]),
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -540,6 +608,7 @@ module.exports = {
   verifySellerRegistration,
   login,
   getProfile,
+  uploadCnicUpdate,
   createProduct,
   getMyProducts,
   updateStock,

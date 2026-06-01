@@ -4,6 +4,7 @@ const { getOrders, checkout, updateOrderStatus, deliveryUpdate, warehouseScan, r
 const { addToCart, getCart, removeFromCart, clearCart } = require('../controllers/cartController');
 const { createSupportRequest } = require('../controllers/supportController');
 const { receiveWarehouseScan } = require('../controllers/warehouseReceivingController');
+const { proxyMedia } = require('../utils/uploads');
 const {
   signup,
   verifySignup,
@@ -20,6 +21,7 @@ const authMiddleware = require('../middleware/authMiddleware'); // Assuming you 
 router.get('/test', (req, res) => {
   res.json({ status: 'ok', message: 'API is reachable' });
 });
+router.get('/media', proxyMedia);
 
 // Auth routes
 router.post('/auth/signup', signup);

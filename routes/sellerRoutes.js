@@ -117,6 +117,17 @@ router.post('/login', sellerController.login);       // Publicly accessible logi
 
 // Protected Seller Routes
 router.get('/profile', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getProfile);
+router.post(
+  '/cnic-update',
+  authMiddleware,
+  isSeller,
+  ensureApprovedSeller,
+  productUpload.fields([
+    { name: 'cnic_front', maxCount: 1 },
+    { name: 'cnic_back', maxCount: 1 }
+  ]),
+  sellerController.uploadCnicUpdate
+);
 router.post('/products', authMiddleware, isSeller, ensureApprovedSeller, uploadProductMedia, sellerController.createProduct);
 router.get('/products', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getMyProducts);
 router.patch('/products/:id/stock', authMiddleware, isSeller, ensureApprovedSeller, sellerController.updateStock);
