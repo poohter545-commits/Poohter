@@ -570,6 +570,15 @@ const finalizeWarehouseProduct = async (req, res, next) => {
     if (sendToTopTeam && !String(description || '').trim()) {
       return res.status(400).json({ error: 'Description is required before sending this product to Top Team.' });
     }
+    if (sendToTopTeam && !String(category || '').trim()) {
+      return res.status(400).json({ error: 'Category is required before sending this product to Top Team.' });
+    }
+    if (sendToTopTeam && parsedPrice <= 0) {
+      return res.status(400).json({ error: 'Admin price must be greater than zero before sending this product to Top Team.' });
+    }
+    if (sendToTopTeam && parsedStock <= 0) {
+      return res.status(400).json({ error: 'Warehouse stock must be greater than zero before sending this product to Top Team.' });
+    }
 
     await client.query('BEGIN');
     await ensureProductWorkflowColumns(client);
@@ -594,6 +603,16 @@ const finalizeWarehouseProduct = async (req, res, next) => {
 
     const productImages = req.files?.product_images || [];
     const productVideo = req.files?.product_video?.[0] || null;
+    const videoDurationSeconds = Number(req.body.product_video_duration_seconds);
+    if (
+      sendToTopTeam
+      && productVideo
+      && Number.isFinite(videoDurationSeconds)
+      && videoDurationSeconds > 10.25
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Product video must be 10 seconds or shorter before sending to Top Team.' });
+    }
     const imagePaths = productImages.map(publicUploadPath).filter(Boolean);
     const videoPath = publicUploadPath(productVideo);
 
