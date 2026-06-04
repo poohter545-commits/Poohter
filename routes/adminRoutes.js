@@ -57,6 +57,7 @@ const productMediaFields = (fields) => (req, res, next) => {
 };
 
 router.post('/login', adminController.login);
+router.get('/documents/:accountType/:id/cnic/:side', adminController.getSignedCnicDocument);
 
 // Protect review and operations routes
 router.use(authMiddleware, isAdmin);

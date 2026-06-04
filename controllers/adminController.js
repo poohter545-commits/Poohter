@@ -38,6 +38,42 @@ const generateAdminToken = () => jwt.sign(
   { expiresIn: '12h' }
 );
 
+const signCnicDocumentToken = ({ accountType, accountId, side }) => jwt.sign(
+  {
+    purpose: 'admin-cnic-document',
+    accountType,
+    accountId: String(accountId),
+    side,
+  },
+  JWT_SECRET,
+  { expiresIn: process.env.CNIC_DOCUMENT_TOKEN_TTL || '10m' }
+);
+
+const signedCnicDocumentPath = ({ accountType, accountId, side }) => {
+  if (!accountId || !side) return null;
+  const token = signCnicDocumentToken({ accountType, accountId, side });
+  return `/api/admin/documents/${encodeURIComponent(accountType)}/${encodeURIComponent(accountId)}/cnic/${encodeURIComponent(side)}?token=${encodeURIComponent(token)}`;
+};
+
+const withSignedCnicDocuments = (accountType, account = {}) => {
+  const accountId = account.id || account.seller_id || account.wholesaler_id || account.cnic_number;
+  return {
+    ...account,
+    cnic_front: account.cnic_front
+      ? signedCnicDocumentPath({ accountType, accountId, side: 'front' })
+      : null,
+    cnic_back: account.cnic_back
+      ? signedCnicDocumentPath({ accountType, accountId, side: 'back' })
+      : null,
+    pending_cnic_front: account.pending_cnic_front
+      ? signedCnicDocumentPath({ accountType, accountId, side: 'pending-front' })
+      : null,
+    pending_cnic_back: account.pending_cnic_back
+      ? signedCnicDocumentPath({ accountType, accountId, side: 'pending-back' })
+      : null,
+  };
+};
+
 const updateOrderStatusColumns = (status) => (
   status === 'out_from_warehouse'
     ? 'status = $1, out_from_warehouse_at = NOW(), out_for_delivery_at = NOW()'
@@ -344,12 +380,53 @@ const getAllSellers = async (req, res, next) => {
        FROM sellers
        ORDER BY created_at DESC`
     );
-    res.status(200).json(result.rows.map((seller) => ({
+    res.status(200).json(result.rows.map((seller) => withSignedCnicDocuments('seller', {
       ...seller,
       cnic_front: publicUploadPathFromValue(seller.cnic_front) || null,
       cnic_back: publicUploadPathFromValue(seller.cnic_back) || null,
       ...normalizeCnicUpdateFields(seller),
     })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getSignedCnicDocument = async (req, res, next) => {
+  try {
+    const { accountType, id, side } = req.params;
+    const token = String(req.query.token || '').trim();
+    if (!token) return res.status(401).json({ error: 'CNIC document token is required' });
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'CNIC document link expired or invalid' });
+    }
+
+    if (
+      payload?.purpose !== 'admin-cnic-document'
+      || payload.accountType !== accountType
+      || String(payload.accountId) !== String(id)
+      || payload.side !== side
+    ) {
+      return res.status(403).json({ error: 'CNIC document link does not match this request' });
+    }
+
+    if (!['seller', 'wholesaler'].includes(accountType)) {
+      return res.status(400).json({ error: 'Invalid CNIC account type' });
+    }
+
+    if (accountType === 'seller') await ensureSellerReviewColumns();
+    const { documentPath } = await getAccountCnicDocument({
+      tableName: accountType === 'seller' ? 'sellers' : 'wholesalers',
+      accountLabel: accountType === 'seller' ? 'Seller' : 'Wholesaler',
+      id,
+      side,
+    });
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    await serveMediaSource(documentPath, res, next, { allowPrivate: true });
   } catch (error) {
     next(error);
   }
@@ -1496,8 +1573,10 @@ module.exports = {
   getDashboardStats,
   getAllUsers,
   getAllSellers,
+  getSignedCnicDocument,
   getSellerCnicDocument,
   getWholesalerCnicDocument,
+  withSignedCnicDocuments,
   getPlatforms,
   updateSellerStatus,
   requestSellerCnicUpdate,

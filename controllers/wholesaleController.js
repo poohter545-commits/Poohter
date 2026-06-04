@@ -8,6 +8,7 @@ const {
   ensureCnicUpdateColumns,
   normalizeCnicUpdateFields,
 } = require('../utils/cnicUpdates');
+const { withSignedCnicDocuments } = require('./adminController');
 const {
   createCode,
   ensureWholesaleTables,
@@ -1267,7 +1268,7 @@ const getAdminWholesalers = async (req, res, next) => {
        GROUP BY w.id
        ORDER BY w.created_at DESC`
     );
-    res.json(result.rows.map(row => ({
+    res.json(result.rows.map(row => withSignedCnicDocuments('wholesaler', {
       ...normalizeWholesaler(row),
       product_count: numberValue(row.product_count),
       order_count: numberValue(row.order_count),
