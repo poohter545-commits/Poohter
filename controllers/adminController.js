@@ -4,7 +4,12 @@ const { JWT_SECRET } = require('../config/auth');
 const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
-const { persistUploadedFiles, publicUploadPath, publicUploadPathFromValue } = require('../utils/uploads');
+const {
+  persistUploadedFiles,
+  publicUploadPath,
+  publicUploadPathFromValue,
+  serveMediaSource,
+} = require('../utils/uploads');
 const {
   DEFAULT_DELIVERY_CHARGE,
   DEFAULT_PACKING_MATERIAL_COST,
@@ -51,6 +56,74 @@ const ensureSellerReviewColumns = async () => {
       ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP
   `);
   await ensureCnicUpdateColumns(pool, 'sellers');
+};
+
+const cnicColumnCandidates = {
+  front: ['cnic_front', 'cnicFront', 'cnic_front_url', 'cnicFrontUrl', 'document_url'],
+  back: ['cnic_back', 'cnicBack', 'cnic_back_url', 'cnicBackUrl', 'document_url'],
+  'pending-front': ['pending_cnic_front', 'pendingCnicFront', 'pending_cnic_front_url', 'pendingCnicFrontUrl'],
+  'pending-back': ['pending_cnic_back', 'pendingCnicBack', 'pending_cnic_back_url', 'pendingCnicBackUrl'],
+};
+
+const getExistingColumns = async (tableName, columnCandidates) => {
+  const result = await pool.query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = $1
+       AND column_name = ANY($2::text[])`,
+    [tableName, columnCandidates]
+  );
+  const existing = new Set(result.rows.map((row) => row.column_name));
+  return columnCandidates.filter((column) => existing.has(column));
+};
+
+const getAccountCnicDocument = async ({ tableName, accountLabel, id, side }) => {
+  const normalizedSide = String(side || '').trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(cnicColumnCandidates, normalizedSide)) {
+    const error = new Error('CNIC side must be front, back, pending-front, or pending-back');
+    error.status = 400;
+    throw error;
+  }
+
+  const columns = await getExistingColumns(tableName, cnicColumnCandidates[normalizedSide]);
+  if (!columns.length) {
+    const error = new Error('CNIC document columns are not configured for this account type');
+    error.status = 404;
+    throw error;
+  }
+
+  const selectColumns = columns.map((column) => `"${column}"`).join(', ');
+  const result = await pool.query(
+    `SELECT id, cnic_number, status, ${selectColumns}
+     FROM ${tableName}
+     WHERE id::text = $1 OR cnic_number = $1
+     LIMIT 1`,
+    [String(id || '').trim()]
+  );
+
+  const account = result.rows[0];
+  if (!account) {
+    const error = new Error(`${accountLabel} not found`);
+    error.status = 404;
+    throw error;
+  }
+
+  const documentPath = columns
+    .map((column) => account[column])
+    .find((value) => String(value || '').trim());
+
+  if (!documentPath) {
+    const error = new Error('CNIC document not uploaded for this user');
+    error.status = 404;
+    throw error;
+  }
+
+  return {
+    account,
+    documentPath,
+    side: normalizedSide,
+  };
 };
 
 const ensureOrderPaymentColumns = async (clientOrPool = pool) => {
@@ -277,6 +350,41 @@ const getAllSellers = async (req, res, next) => {
       cnic_back: publicUploadPathFromValue(seller.cnic_back) || null,
       ...normalizeCnicUpdateFields(seller),
     })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getSellerCnicDocument = async (req, res, next) => {
+  try {
+    await ensureSellerReviewColumns();
+    const { documentPath, side } = await getAccountCnicDocument({
+      tableName: 'sellers',
+      accountLabel: 'Seller',
+      id: req.params.id,
+      side: req.params.side,
+    });
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `inline; filename="seller-cnic-${side}"`);
+    await serveMediaSource(documentPath, res, next);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getWholesalerCnicDocument = async (req, res, next) => {
+  try {
+    const { documentPath, side } = await getAccountCnicDocument({
+      tableName: 'wholesalers',
+      accountLabel: 'Wholesaler',
+      id: req.params.id,
+      side: req.params.side,
+    });
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `inline; filename="wholesaler-cnic-${side}"`);
+    await serveMediaSource(documentPath, res, next);
   } catch (error) {
     next(error);
   }
@@ -1388,6 +1496,8 @@ module.exports = {
   getDashboardStats,
   getAllUsers,
   getAllSellers,
+  getSellerCnicDocument,
+  getWholesalerCnicDocument,
   getPlatforms,
   updateSellerStatus,
   requestSellerCnicUpdate,

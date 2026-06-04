@@ -390,57 +390,67 @@ const serveStoredUpload = async (req, res, next) => {
   }
 };
 
+const serveMediaSource = async (source, res, next) => {
+  const mediaPath = publicUploadPathFromValue(source);
+  if (/^uploads\//.test(mediaPath)) {
+    if (await sendStoredUploadByPath(mediaPath, res, next)) return true;
+    if (await sendFileUploadByPath(mediaPath, res)) return true;
+    mediaLog('Proxy media local missing', { source, mediaPath });
+    res.status(404).json({ error: 'Media file not found' });
+    return true;
+  }
+
+  if (/^https?:\/\//i.test(mediaPath) || supabaseUrlCandidatesForPath(source).length) {
+    const response = await fetchRemoteMedia(source);
+    if (!response) {
+      mediaLog('Proxy remote media unreachable', { source });
+      res.status(502).json({ error: 'Remote media could not be reached' });
+      return true;
+    }
+    if (!response.ok) {
+      mediaLog('Proxy remote media non-ok', { source, status: response.status });
+      res.status(response.status).json({ error: 'Remote media could not be loaded' });
+      return true;
+    }
+
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const cacheControl = response.headers.get('cache-control') || 'private, max-age=300';
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    if (contentLength && contentLength > MAX_PROXY_MEDIA_BYTES) {
+      mediaLog('Proxy remote media too large', { source, contentLength });
+      res.status(413).json({ error: 'Remote media is too large' });
+      return true;
+    }
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', cacheControl);
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    await (response.body
+      ? response.body.pipeTo(new WritableStream({
+        write(chunk) {
+          res.write(Buffer.from(chunk));
+        },
+        close() {
+          res.end();
+        },
+        abort(error) {
+          res.destroy(error);
+        },
+      }))
+      : Promise.resolve(res.end()));
+    return true;
+  }
+
+  mediaLog('Proxy media unsupported path', { source, mediaPath });
+  res.status(404).json({ error: 'Media file not found' });
+  return true;
+};
+
 const proxyMedia = async (req, res, next) => {
   try {
     const source = String(req.query.src || req.query.path || '').trim();
     if (!source) return res.status(400).json({ error: 'Media source is required' });
-
-    const mediaPath = publicUploadPathFromValue(source);
-    if (/^uploads\//.test(mediaPath)) {
-      if (await sendStoredUploadByPath(mediaPath, res, next)) return undefined;
-      if (await sendFileUploadByPath(mediaPath, res)) return undefined;
-      mediaLog('Proxy media local missing', { source, mediaPath });
-      return res.status(404).json({ error: 'Media file not found' });
-    }
-
-    if (/^https?:\/\//i.test(mediaPath) || supabaseUrlCandidatesForPath(source).length) {
-      const response = await fetchRemoteMedia(source);
-      if (!response) {
-        mediaLog('Proxy remote media unreachable', { source });
-        return res.status(502).json({ error: 'Remote media could not be reached' });
-      }
-      if (!response.ok) {
-        mediaLog('Proxy remote media non-ok', { source, status: response.status });
-        return res.status(response.status).json({ error: 'Remote media could not be loaded' });
-      }
-
-      const contentType = response.headers.get('content-type') || 'application/octet-stream';
-      const cacheControl = response.headers.get('cache-control') || 'public, max-age=3600';
-      const contentLength = Number(response.headers.get('content-length') || 0);
-      if (contentLength && contentLength > MAX_PROXY_MEDIA_BYTES) {
-        mediaLog('Proxy remote media too large', { source, contentLength });
-        return res.status(413).json({ error: 'Remote media is too large' });
-      }
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', cacheControl);
-      if (contentLength) res.setHeader('Content-Length', contentLength);
-      return response.body
-        ? response.body.pipeTo(new WritableStream({
-          write(chunk) {
-            res.write(Buffer.from(chunk));
-          },
-          close() {
-            res.end();
-          },
-          abort(error) {
-            res.destroy(error);
-          },
-        }))
-        : res.end();
-    }
-
-    mediaLog('Proxy media unsupported path', { source, mediaPath });
-    return res.status(404).json({ error: 'Media file not found' });
+    await serveMediaSource(source, res, next);
+    return undefined;
   } catch (error) {
     return next(error);
   }
@@ -456,6 +466,7 @@ module.exports = {
   persistUploadedFile,
   persistUploadedFiles,
   publicUploadPath,
+  serveMediaSource,
   proxyMedia,
   serveStoredUpload,
 };

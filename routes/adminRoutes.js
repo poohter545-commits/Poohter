@@ -70,6 +70,8 @@ router.patch('/warehouse/receiving-scans/:id/status', warehouseReceivingControll
 router.get('/sellers', adminController.getAllSellers);
 router.get('/wholesalers', wholesaleController.getAdminWholesalers);
 router.get('/platforms', adminController.getPlatforms);
+router.get('/sellers/:id/cnic/:side', adminController.getSellerCnicDocument);
+router.get('/wholesalers/:id/cnic/:side', adminController.getWholesalerCnicDocument);
 router.patch('/sellers/:id/status', adminController.updateSellerStatus);
 router.post('/sellers/:id/cnic-update-request', adminController.requestSellerCnicUpdate);
 router.patch('/sellers/:id/cnic-update', adminController.reviewSellerCnicUpdate);
