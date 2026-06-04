@@ -10,6 +10,7 @@ const { ensureUploadDir } = require('../utils/uploads');
 
 const PRODUCT_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const PRODUCT_VIDEO_LIMIT_BYTES = 10 * 1024 * 1024;
+const CNIC_UPLOAD_LIMIT_BYTES = 6 * 1024 * 1024;
 
 // Multer Storage Configuration for Products
 const storage = multer.diskStorage({
@@ -45,7 +46,7 @@ const productUpload = multer({
         if (isPhoto) return cb(null, true);
         return cb(new Error('CNIC must be a JPG or PNG image'));
     }
-    cb(null, true); // Fallback to allow other potential fields
+    cb(new Error(`Unexpected upload field: ${file.fieldname}`));
   },
   limits: {
     fileSize: PRODUCT_UPLOAD_LIMIT_BYTES
@@ -73,6 +74,26 @@ const uploadProductMedia = (req, res, next) => {
     }
 
     next();
+  });
+};
+
+const uploadCnicFields = (req, res, next) => {
+  const upload = productUpload.fields([
+    { name: 'cnic_front', maxCount: 1 },
+    { name: 'cnic_back', maxCount: 1 }
+  ]);
+
+  upload(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    }
+    if (err) return res.status(400).json({ error: err.message });
+
+    const files = Object.values(req.files || {}).flat();
+    if (files.some((file) => file.size > CNIC_UPLOAD_LIMIT_BYTES)) {
+      return res.status(400).json({ error: 'CNIC images must be 6MB or smaller' });
+    }
+    return next();
   });
 };
 
@@ -106,10 +127,7 @@ const ensureApprovedSeller = async (req, res, next) => {
 // Public Seller Auth
 router.post(
   '/register', 
-  productUpload.fields([
-    { name: 'cnic_front', maxCount: 1 }, 
-    { name: 'cnic_back', maxCount: 1 }
-  ]), 
+  uploadCnicFields,
   sellerController.register
 ); 
 router.post('/register/verify', sellerController.verifySellerRegistration);
@@ -122,10 +140,7 @@ router.post(
   authMiddleware,
   isSeller,
   ensureApprovedSeller,
-  productUpload.fields([
-    { name: 'cnic_front', maxCount: 1 },
-    { name: 'cnic_back', maxCount: 1 }
-  ]),
+  uploadCnicFields,
   sellerController.uploadCnicUpdate
 );
 router.post('/products', authMiddleware, isSeller, ensureApprovedSeller, uploadProductMedia, sellerController.createProduct);

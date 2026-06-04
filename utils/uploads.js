@@ -5,6 +5,7 @@ const pool = require('../config/db');
 const defaultUploadRoot = path.resolve(__dirname, '..', 'uploads');
 const UPLOAD_ROOT = path.resolve(process.env.UPLOAD_ROOT || defaultUploadRoot);
 const SUPABASE_SIGNED_URL_TTL_SECONDS = Number(process.env.SUPABASE_SIGNED_URL_TTL_SECONDS || 3600);
+const MAX_PROXY_MEDIA_BYTES = Number(process.env.MAX_PROXY_MEDIA_BYTES || 50 * 1024 * 1024);
 
 const normalizeUploadPath = (value = '') => (
   String(value || '')
@@ -12,6 +13,27 @@ const normalizeUploadPath = (value = '') => (
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
 );
+
+const decodePathSafely = (value = '') => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    try {
+      return decodeURI(value);
+    } catch {
+      return value;
+    }
+  }
+};
+
+const mediaLog = (message, details = {}) => {
+  if (process.env.NODE_ENV === 'test') return;
+  const payload = Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(' ');
+  console.warn(`[media] ${message}${payload ? ` ${payload}` : ''}`);
+};
 
 const ensureUploadDir = (relativeDir) => {
   const cleanDir = normalizeUploadPath(relativeDir).replace(/^uploads\//, '');
@@ -45,7 +67,7 @@ const publicUploadPath = (file) => {
 };
 
 const publicUploadPathFromValue = (value = '') => {
-  const normalized = normalizeUploadPath(value);
+  const normalized = normalizeUploadPath(decodePathSafely(value));
   if (!normalized) return '';
 
   if (/^https?:\/\//i.test(normalized)) {
@@ -58,9 +80,14 @@ const publicUploadPathFromValue = (value = '') => {
         return url.toString();
       }
 
-      const pathName = url.pathname.replace(/^\/+/, '');
+      const pathName = decodePathSafely(url.pathname).replace(/^\/+/, '');
       const uploadIndex = pathName.lastIndexOf('uploads/');
       if (uploadIndex >= 0) return pathName.slice(uploadIndex);
+
+      const mediaSrc = url.searchParams.get('src') || url.searchParams.get('path');
+      if (/\/api\/media$/i.test(url.pathname) && mediaSrc) {
+        return publicUploadPathFromValue(mediaSrc);
+      }
 
       if (/^(products|sellers|wholesalers|wholesale)\//.test(pathName)) {
         return `uploads/${pathName}`;
@@ -82,6 +109,32 @@ const publicUploadPathFromValue = (value = '') => {
   }
 
   return normalized;
+};
+
+const storedPathCandidates = (value = '') => {
+  const normalized = publicUploadPathFromValue(value);
+  const candidates = new Set();
+  const add = (candidate = '') => {
+    const clean = publicUploadPathFromValue(candidate);
+    if (clean) candidates.add(clean);
+  };
+
+  add(normalized);
+  add(decodePathSafely(normalized));
+
+  const withoutUploads = normalized.replace(/^uploads\//, '');
+  if (withoutUploads && withoutUploads !== normalized) add(withoutUploads);
+  if (withoutUploads && /^(products|sellers|wholesalers|wholesale)\//.test(withoutUploads)) add(`uploads/${withoutUploads}`);
+
+  if (/^https?:\/\//i.test(String(value || ''))) {
+    const parsed = parseSupabaseStorageSource(value);
+    if (parsed) {
+      add(parsed.objectPath);
+      add(`uploads/${parsed.objectPath}`);
+    }
+  }
+
+  return [...candidates];
 };
 
 const cleanSupabaseUrl = () => String(process.env.SUPABASE_URL || process.env.SUPABASE_PROJECT_URL || '').replace(/\/+$/, '');
@@ -133,10 +186,16 @@ const signSupabaseObjectUrl = async ({ origin, bucket, objectPath }) => {
     body: JSON.stringify({ expiresIn: SUPABASE_SIGNED_URL_TTL_SECONDS }),
   });
 
-  if (!response.ok) return '';
+  if (!response.ok) {
+    mediaLog('Supabase signed URL failed', { bucket, objectPath: cleanPath, status: response.status });
+    return '';
+  }
   const data = await response.json().catch(() => ({}));
   const signed = data.signedURL || data.signedUrl || data.url || '';
-  if (!signed) return '';
+  if (!signed) {
+    mediaLog('Supabase signed URL response missing url', { bucket, objectPath: cleanPath });
+    return '';
+  }
   return /^https?:\/\//i.test(signed) ? signed : `${baseUrl}${signed.startsWith('/') ? '' : '/'}${signed}`;
 };
 
@@ -182,11 +241,14 @@ const fetchRemoteMedia = async (source) => {
       const response = await fetch(url);
       if (response.ok) return response;
       lastResponse = response;
-    } catch {
-      // Try the next candidate; the route returns the final failure below.
+    } catch (error) {
+      mediaLog('Remote media candidate failed', { url, error: error.message });
     }
   }
 
+  if (uniqueCandidates.length) {
+    mediaLog('Remote media not loadable', { source, tried: uniqueCandidates.length, status: lastResponse?.status });
+  }
   return lastResponse;
 };
 
@@ -219,6 +281,15 @@ const persistUploadedFile = async (file, clientOrPool = pool) => {
     [filePath, file.mimetype || 'application/octet-stream', Number(file.size || data.length), data]
   );
 
+  const verify = await clientOrPool.query(
+    'SELECT 1 FROM uploaded_files WHERE file_path = $1 LIMIT 1',
+    [filePath]
+  );
+  if (!verify.rows.length) {
+    mediaLog('Uploaded file was not persisted', { filePath });
+    throw new Error(`Uploaded media could not be saved: ${filePath}`);
+  }
+
   return filePath;
 };
 
@@ -227,13 +298,23 @@ const persistUploadedFiles = async (files = [], clientOrPool = pool) => (
 );
 
 const sendStoredUploadByPath = async (filePath, res, next) => {
-  await ensureStoredUploadsTable(pool);
-  const result = await pool.query(
-    'SELECT content_type, data FROM uploaded_files WHERE file_path = $1 LIMIT 1',
-    [filePath]
-  );
+  const candidates = storedPathCandidates(filePath);
+  let result;
+  try {
+    await ensureStoredUploadsTable(pool);
+    result = await pool.query(
+      'SELECT content_type, data, file_path FROM uploaded_files WHERE file_path = ANY($1::text[]) LIMIT 1',
+      [candidates]
+    );
+  } catch (error) {
+    mediaLog('Stored media lookup failed, trying filesystem fallback', { filePath, error: error.message });
+    return false;
+  }
   const file = result.rows[0];
-  if (!file) return false;
+  if (!file) {
+    mediaLog('Stored media not found', { filePath, candidates });
+    return false;
+  }
 
   const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
   const size = data.length;
@@ -274,19 +355,24 @@ const sendStoredUploadByPath = async (filePath, res, next) => {
 };
 
 const sendFileUploadByPath = async (filePath, res) => {
-  const cleanPath = publicUploadPathFromValue(filePath).replace(/^uploads\//, '');
-  if (!cleanPath || cleanPath === filePath) return false;
+  const cleanPaths = storedPathCandidates(filePath)
+    .map((candidate) => candidate.replace(/^uploads\//, ''))
+    .filter(Boolean);
+  if (!cleanPaths.length) return false;
 
   const roots = [UPLOAD_ROOT, path.resolve(process.cwd(), 'uploads')];
   for (const root of roots) {
-    const absolutePath = path.resolve(root, cleanPath);
-    if (!absolutePath.startsWith(path.resolve(root))) continue;
-    if (!fs.existsSync(absolutePath)) continue;
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    res.sendFile(absolutePath);
-    return true;
+    for (const cleanPath of cleanPaths) {
+      const absolutePath = path.resolve(root, cleanPath);
+      if (!absolutePath.startsWith(path.resolve(root))) continue;
+      if (!fs.existsSync(absolutePath)) continue;
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.sendFile(absolutePath);
+      return true;
+    }
   }
 
+  mediaLog('Filesystem media not found', { filePath, cleanPaths });
   return false;
 };
 
@@ -313,23 +399,47 @@ const proxyMedia = async (req, res, next) => {
     if (/^uploads\//.test(mediaPath)) {
       if (await sendStoredUploadByPath(mediaPath, res, next)) return undefined;
       if (await sendFileUploadByPath(mediaPath, res)) return undefined;
+      mediaLog('Proxy media local missing', { source, mediaPath });
       return res.status(404).json({ error: 'Media file not found' });
     }
 
     if (/^https?:\/\//i.test(mediaPath) || supabaseUrlCandidatesForPath(source).length) {
       const response = await fetchRemoteMedia(source);
-      if (!response) return res.status(502).json({ error: 'Remote media could not be reached' });
-      if (!response.ok) return res.status(response.status).json({ error: 'Remote media could not be loaded' });
+      if (!response) {
+        mediaLog('Proxy remote media unreachable', { source });
+        return res.status(502).json({ error: 'Remote media could not be reached' });
+      }
+      if (!response.ok) {
+        mediaLog('Proxy remote media non-ok', { source, status: response.status });
+        return res.status(response.status).json({ error: 'Remote media could not be loaded' });
+      }
 
       const contentType = response.headers.get('content-type') || 'application/octet-stream';
       const cacheControl = response.headers.get('cache-control') || 'public, max-age=3600';
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      if (contentLength && contentLength > MAX_PROXY_MEDIA_BYTES) {
+        mediaLog('Proxy remote media too large', { source, contentLength });
+        return res.status(413).json({ error: 'Remote media is too large' });
+      }
       res.setHeader('Content-Type', contentType);
       res.setHeader('Cache-Control', cacheControl);
-      res.setHeader('Content-Length', buffer.length);
-      return res.send(buffer);
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+      return response.body
+        ? response.body.pipeTo(new WritableStream({
+          write(chunk) {
+            res.write(Buffer.from(chunk));
+          },
+          close() {
+            res.end();
+          },
+          abort(error) {
+            res.destroy(error);
+          },
+        }))
+        : res.end();
     }
 
+    mediaLog('Proxy media unsupported path', { source, mediaPath });
     return res.status(404).json({ error: 'Media file not found' });
   } catch (error) {
     return next(error);
@@ -341,6 +451,7 @@ module.exports = {
   ensureUploadDir,
   ensureStoredUploadsTable,
   normalizeUploadPath,
+  storedPathCandidates,
   publicUploadPathFromValue,
   persistUploadedFile,
   persistUploadedFiles,

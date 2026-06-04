@@ -12,6 +12,7 @@ const {
 const { sendOrderStatusEmailSafely } = require('../utils/orderNotifications');
 const { extractOrderLookupValue } = require('../utils/orderLookup');
 const { requirePakistaniMobileNumber } = require('../utils/phoneValidation');
+const { getPagination } = require('../utils/pagination');
 const { createReturnCode, ensureReturnsTable, getReturnWindow } = require('../utils/returns');
 
 const getBuyerSnapshot = async (client, buyerId) => {
@@ -183,6 +184,7 @@ const getOrders = async (req, res, next) => {
   try {
     const buyerId = req.user?.id;
     if (!buyerId) return res.status(401).json({ error: 'Authentication required' });
+    const { limit, offset } = getPagination(req.query, { defaultLimit: 50, maxLimit: 100 });
 
     await ensureOrderChargeColumns(pool);
     await ensureReturnsTable(pool);
@@ -220,8 +222,9 @@ const getOrders = async (req, res, next) => {
        ) return_summary ON TRUE
        WHERE o.user_id = $1
        GROUP BY o.id, return_summary.return_statuses, return_summary.latest_return_at
-       ORDER BY o.created_at DESC`,
-      [buyerId]
+       ORDER BY o.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [buyerId, limit, offset]
     );
 
     const orders = result.rows.map(order => {

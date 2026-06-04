@@ -94,12 +94,19 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
+app.use(express.urlencoded({ extended: false, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
 app.use(logger);
-app.use('/uploads', express.static(UPLOAD_ROOT));
+app.use('/uploads', express.static(UPLOAD_ROOT, {
+  immutable: true,
+  maxAge: '365d',
+}));
 const legacyUploadRoot = path.resolve(process.cwd(), 'uploads');
 if (legacyUploadRoot !== UPLOAD_ROOT) {
-  app.use('/uploads', express.static(legacyUploadRoot));
+  app.use('/uploads', express.static(legacyUploadRoot, {
+    immutable: true,
+    maxAge: '365d',
+  }));
 }
 app.get(/^\/uploads\/(.+)/, serveStoredUpload);
 app.use('/api', productRoutes);
@@ -136,7 +143,9 @@ app.use((err, req, res, next) => {
   if (process.env.NODE_ENV !== 'test') {
     console.error(err.stack);
   }
-  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+  const status = err.status || err.statusCode || 500;
+  const message = status >= 500 ? 'Internal Server Error' : (err.message || 'Request failed');
+  res.status(status).json({ error: message });
 });
 
 const PORT = process.env.PORT || 3000;

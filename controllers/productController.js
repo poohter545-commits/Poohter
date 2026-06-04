@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getPagination } = require('../utils/pagination');
 const { publicUploadPathFromValue } = require('../utils/uploads');
 
 const getRequestOrigin = (req) => {
@@ -12,11 +13,10 @@ const getRequestOrigin = (req) => {
 const absoluteMediaUrl = (req, value) => {
   if (!value) return null;
   const rawValue = String(value).trim();
-  if (/^https?:\/\//i.test(rawValue)) return rawValue;
-
   const publicPath = publicUploadPathFromValue(rawValue);
-  if (!publicPath) return null;
-  return `${getRequestOrigin(req)}/${publicPath.replace(/^\/+/, '')}`;
+  const source = publicPath || rawValue;
+  if (!source) return null;
+  return `${getRequestOrigin(req)}/api/media?src=${encodeURIComponent(source)}`;
 };
 
 const normalizeMediaFiles = (req, mediaFiles) => (
@@ -87,6 +87,7 @@ const createProduct = async (req, res, next) => {
 
 const getProducts = async (req, res, next) => {
   try {
+    const { limit, offset, nextOffset } = getPagination(req.query, { defaultLimit: 60, maxLimit: 100 });
     const result = await pool.query(
       `SELECT
         p.id,
@@ -118,11 +119,18 @@ const getProducts = async (req, res, next) => {
         WHERE pm.product_id = p.id
        ) media ON TRUE
        WHERE COALESCE(p.status, 'live') = 'live'
-       ORDER BY p.created_at DESC, p.id DESC`
+       ORDER BY p.created_at DESC, p.id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
     );
 
     return res.status(200).json({
       products: result.rows.map((product) => normalizeProduct(req, product)),
+      pagination: {
+        limit,
+        offset,
+        next_offset: result.rows.length === limit ? nextOffset : null,
+      },
     });
   } catch (error) {
     next(error);
