@@ -98,7 +98,7 @@ app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(express.urlencoded({ extended: false, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
 app.use(logger);
 app.use('/uploads', (req, res, next) => {
-  if (isPrivateCnicPath(`uploads/${req.path}`)) {
+  if (isPrivateCnicPath(`uploads/${String(req.path || '').replace(/^\/+/, '')}`)) {
     return res.status(404).json({ error: 'Not found' });
   }
   return next();
