@@ -296,6 +296,7 @@ const verifyWholesalerRegistration = async (req, res, next) => {
 const loginWholesaler = async (req, res, next) => {
   try {
     await ensureWholesaleTables(pool);
+    await ensureCnicUpdateColumns(pool, 'wholesalers');
     const { email, password } = req.body;
     const result = await pool.query('SELECT * FROM wholesalers WHERE email = $1', [textValue(email)]);
     const wholesaler = result.rows[0];
@@ -1287,6 +1288,14 @@ const updateAdminWholesalerStatus = async (req, res, next) => {
     if (!['approved', 'rejected', 'pending'].includes(status)) {
       return res.status(400).json({ error: 'Invalid wholesaler status' });
     }
+    const current = await pool.query('SELECT id, status FROM wholesalers WHERE id = $1', [req.params.id]);
+    if (!current.rows.length) return res.status(404).json({ error: 'Wholesaler not found' });
+    if (current.rows[0].status === 'approved' && status !== 'approved') {
+      return res.status(400).json({
+        error: 'Approved wholesalers cannot be rejected or moved back to pending. Request a CNIC update instead.',
+      });
+    }
+
     const result = await pool.query(
       `UPDATE wholesalers
        SET status = $1,

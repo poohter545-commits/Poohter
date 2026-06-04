@@ -583,6 +583,16 @@ const updateSellerStatus = async (req, res, next) => {
     }
 
     await ensureSellerReviewColumns();
+    const current = await pool.query('SELECT id, status FROM sellers WHERE id = $1', [id]);
+    if (current.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    if (current.rows[0].status === 'approved' && status !== 'approved') {
+      return res.status(400).json({
+        error: 'Approved sellers cannot be rejected or moved back to pending. Request a CNIC update instead.',
+      });
+    }
+
     const result = await pool.query(
       `UPDATE sellers
        SET status = $1::text,
@@ -592,10 +602,6 @@ const updateSellerStatus = async (req, res, next) => {
        RETURNING id, cnic_number AS seller_id, name, email, shop_name, status, rejected_reason`,
       [status, reason || null, id]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Seller not found' });
-    }
 
     res.json({
       seller: result.rows[0],

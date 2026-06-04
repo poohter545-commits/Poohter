@@ -220,6 +220,7 @@ const verifySellerRegistration = async (req, res, next) => {
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
+    await ensureCnicUpdateColumns(pool, 'sellers');
     const result = await pool.query('SELECT * FROM sellers WHERE email = $1', [email]);
     const seller = result.rows[0];
 
@@ -244,7 +245,8 @@ const login = async (req, res, next) => {
         name: seller.name,
         email: seller.email,
         shop_name: seller.shop_name,
-        status: seller.status
+        status: seller.status,
+        ...normalizeCnicUpdateFields(seller)
       },
       token
     });
