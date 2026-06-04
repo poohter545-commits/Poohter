@@ -367,7 +367,7 @@ const getSellerCnicDocument = async (req, res, next) => {
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Disposition', `inline; filename="seller-cnic-${side}"`);
-    await serveMediaSource(documentPath, res, next);
+    await serveMediaSource(documentPath, res, next, { allowPrivate: true });
   } catch (error) {
     next(error);
   }
@@ -384,7 +384,7 @@ const getWholesalerCnicDocument = async (req, res, next) => {
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Disposition', `inline; filename="wholesaler-cnic-${side}"`);
-    await serveMediaSource(documentPath, res, next);
+    await serveMediaSource(documentPath, res, next, { allowPrivate: true });
   } catch (error) {
     next(error);
   }

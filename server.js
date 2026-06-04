@@ -12,7 +12,7 @@ const wholesalerRoutes = require('./routes/wholesalerRoutes');
 const legalRoutes = require('./routes/legalRoutes');
 const logger = require('./middleware/logger');
 const { initProductionDb } = require('./scripts/initProductionDb');
-const { UPLOAD_ROOT, ensureUploadDir, serveStoredUpload } = require('./utils/uploads');
+const { UPLOAD_ROOT, ensureUploadDir, isPrivateCnicPath, serveStoredUpload } = require('./utils/uploads');
 
 dotenv.config();
 
@@ -97,6 +97,12 @@ app.use(cors({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(express.urlencoded({ extended: false, limit: process.env.FORM_BODY_LIMIT || '1mb' }));
 app.use(logger);
+app.use('/uploads', (req, res, next) => {
+  if (isPrivateCnicPath(`uploads/${req.path}`)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  return next();
+});
 app.use('/uploads', express.static(UPLOAD_ROOT, {
   immutable: true,
   maxAge: '365d',

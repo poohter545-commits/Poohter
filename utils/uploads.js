@@ -35,6 +35,11 @@ const mediaLog = (message, details = {}) => {
   console.warn(`[media] ${message}${payload ? ` ${payload}` : ''}`);
 };
 
+const isPrivateCnicPath = (value = '') => {
+  const normalized = publicUploadPathFromValue(value).replace(/^\/+/, '');
+  return /^uploads\/(?:sellers|wholesalers)\/cnic\//i.test(normalized);
+};
+
 const ensureUploadDir = (relativeDir) => {
   const cleanDir = normalizeUploadPath(relativeDir).replace(/^uploads\//, '');
   const absoluteDir = path.join(UPLOAD_ROOT, cleanDir);
@@ -390,8 +395,12 @@ const serveStoredUpload = async (req, res, next) => {
   }
 };
 
-const serveMediaSource = async (source, res, next) => {
+const serveMediaSource = async (source, res, next, options = {}) => {
   const mediaPath = publicUploadPathFromValue(source);
+  if (!options.allowPrivate && isPrivateCnicPath(mediaPath)) {
+    res.status(404).json({ error: 'Media file not found' });
+    return true;
+  }
   if (/^uploads\//.test(mediaPath)) {
     if (await sendStoredUploadByPath(mediaPath, res, next)) return true;
     if (await sendFileUploadByPath(mediaPath, res)) return true;
@@ -462,6 +471,7 @@ module.exports = {
   ensureStoredUploadsTable,
   normalizeUploadPath,
   storedPathCandidates,
+  isPrivateCnicPath,
   publicUploadPathFromValue,
   persistUploadedFile,
   persistUploadedFiles,
