@@ -5,6 +5,7 @@ const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES || 10);
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 const OTP_RESEND_COOLDOWN_SECONDS = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60);
 const OTP_MAX_RESENDS = Number(process.env.OTP_MAX_RESENDS || 5);
+const EMAIL_SEND_TIMEOUT_MS = Number(process.env.EMAIL_SEND_TIMEOUT_MS || 15000);
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 const normalizeAccountType = (accountType) => String(accountType || 'buyer').trim().toLowerCase();
@@ -82,21 +83,35 @@ const sendEmail = async ({ to, subject, html, text }) => {
 
   const from = process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || 'Poohter <noreply@poohter.com>';
   const replyTo = process.env.RESEND_REPLY_TO || process.env.SUPPORT_EMAIL || 'poohter545@gmail.com';
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from,
-      to: [to],
-      subject,
-      html,
-      text,
-      reply_to: replyTo,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EMAIL_SEND_TIMEOUT_MS);
+  let response;
+
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [to],
+        subject,
+        html,
+        text,
+        reply_to: replyTo,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Email service is taking too long. Please use Resend OTP in a moment.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -147,17 +162,14 @@ const otpEmailContent = ({ code, purpose, accountType, displayName }) => {
   return { subject: title, html, text };
 };
 
-const createEmailOtp = async ({ email, purpose, accountType = 'buyer', displayName = '', payload = null }) => {
+const createEmailOtp = async ({ email, purpose, accountType = 'buyer', displayName = '', payload = null, waitForDelivery = true }) => {
   const cleanEmail = normalizeEmail(email);
   if (!cleanEmail) throw new Error('Email is required.');
 
   const cleanAccountType = normalizeAccountType(accountType);
   const code = generateOtp();
+  const emailContent = otpEmailContent({ code, purpose, accountType: cleanAccountType, displayName });
   await ensureEmailOtpTable();
-  await sendEmail({
-    to: cleanEmail,
-    ...otpEmailContent({ code, purpose, accountType: cleanAccountType, displayName }),
-  });
   await pool.query(
     `UPDATE email_otps
      SET consumed_at = NOW()
@@ -179,6 +191,24 @@ const createEmailOtp = async ({ email, purpose, accountType = 'buyer', displayNa
       OTP_TTL_MINUTES,
     ]
   );
+
+  const sendOtpEmail = () => sendEmail({
+    to: cleanEmail,
+    ...emailContent,
+  });
+
+  if (waitForDelivery) {
+    await sendOtpEmail();
+  } else {
+    sendOtpEmail().catch((error) => {
+      console.error('[email otp] async delivery failed', {
+        email: cleanEmail,
+        purpose,
+        accountType: cleanAccountType,
+        error: error.message,
+      });
+    });
+  }
 
   return { email: cleanEmail, expiresInMinutes: OTP_TTL_MINUTES };
 };

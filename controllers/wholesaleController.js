@@ -210,6 +210,7 @@ const registerWholesaler = async (req, res, next) => {
       purpose: 'signup',
       accountType: 'wholesaler',
       displayName: name,
+      waitForDelivery: false,
       payload: {
         name: textValue(name),
         email: cleanEmail,
