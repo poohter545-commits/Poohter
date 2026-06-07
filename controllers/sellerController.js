@@ -37,7 +37,9 @@ const ensureProductMetadataColumns = async (clientOrPool = pool) => {
       ADD COLUMN IF NOT EXISTS receipt_code TEXT,
       ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
       ADD COLUMN IF NOT EXISTS warehouse_received_at TIMESTAMP,
-      ADD COLUMN IF NOT EXISTS live_at TIMESTAMP
+      ADD COLUMN IF NOT EXISTS live_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS deleted_by TEXT
   `);
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS product_media (
@@ -442,12 +444,68 @@ const getMyProducts = async (req, res, next) => {
         WHERE pm.product_id = p.id
        ) media ON TRUE
        WHERE p.seller_id = $1
+         AND p.deleted_at IS NULL
        ORDER BY p.created_at DESC, p.id DESC`,
       [sellerId]
     );
     res.json(result.rows);
   } catch (error) {
     next(error);
+  }
+};
+
+const deleteMyProduct = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const sellerId = req.user.id;
+    const productId = req.params.id;
+    const typedName = String(req.body?.name || req.body?.product_name || '').trim();
+
+    await client.query('BEGIN');
+    await ensureProductMetadataColumns(client);
+
+    const productResult = await client.query(
+      `SELECT id, name, product_uid
+       FROM products
+       WHERE id = $1
+         AND seller_id = $2
+         AND deleted_at IS NULL
+       FOR UPDATE`,
+      [productId, sellerId]
+    );
+
+    if (!productResult.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Product not found or already deleted.' });
+    }
+
+    const product = productResult.rows[0];
+    if (typedName !== String(product.name || '').trim()) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Type the exact English product name to delete this product.' });
+    }
+
+    const result = await client.query(
+      `UPDATE products
+       SET status = 'deleted',
+           deleted_at = NOW(),
+           deleted_by = $1,
+           live_at = NULL
+       WHERE id = $2
+       RETURNING id, product_uid, name, status, deleted_at`,
+      [String(req.user?.email || sellerId), product.id]
+    );
+
+    await client.query('COMMIT');
+    return res.json({
+      message: `Product "${product.name}" deleted.`,
+      product: result.rows[0],
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    return next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -613,6 +671,7 @@ module.exports = {
   uploadCnicUpdate,
   createProduct,
   getMyProducts,
+  deleteMyProduct,
   updateStock,
   getSellerOrders,
   updateSellerOrderStatus,

@@ -145,6 +145,7 @@ router.post(
 );
 router.post('/products', authMiddleware, isSeller, ensureApprovedSeller, uploadProductMedia, sellerController.createProduct);
 router.get('/products', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getMyProducts);
+router.delete('/products/:id', authMiddleware, isSeller, ensureApprovedSeller, sellerController.deleteMyProduct);
 router.patch('/products/:id/stock', authMiddleware, isSeller, ensureApprovedSeller, sellerController.updateStock);
 router.get('/orders', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getSellerOrders);
 router.patch('/orders/:id/status', authMiddleware, isSeller, ensureApprovedSeller, sellerController.updateSellerOrderStatus);
