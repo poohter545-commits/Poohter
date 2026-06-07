@@ -58,7 +58,6 @@ router.post(
   ]),
   wholesaleController.registerWholesaler
 );
-router.post('/register/verify', wholesaleController.verifyWholesalerRegistration);
 router.post('/login', wholesaleController.loginWholesaler);
 
 router.use(authMiddleware, isWholesaler);
