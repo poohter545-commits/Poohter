@@ -24,7 +24,11 @@ const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
     const isImage = /image\/(jpeg|jpg|png)/.test(file.mimetype);
-    if (['cnic_front', 'cnic_back', 'product_images'].includes(file.fieldname)) {
+    const isPdf = file.mimetype === 'application/pdf';
+    if (['cnic_front', 'cnic_back'].includes(file.fieldname)) {
+      return (isImage || isPdf) ? cb(null, true) : cb(new Error('Only JPG, PNG, and PDF files are allowed for CNIC documents'));
+    }
+    if (file.fieldname === 'product_images') {
       return isImage ? cb(null, true) : cb(new Error('Only JPG and PNG images are allowed'));
     }
     return cb(null, true);
