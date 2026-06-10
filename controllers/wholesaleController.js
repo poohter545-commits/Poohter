@@ -992,6 +992,64 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
   }
 };
 
+const applyWholesalerExpectedProfitPercent = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const profitPercent = Number(req.body?.profit_percent);
+    if (!Number.isFinite(profitPercent) || profitPercent < 0 || profitPercent > 1000) {
+      return res.status(400).json({ error: 'Profit percent must be between 0 and 1000.' });
+    }
+
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+
+    const wholesalerResult = await client.query(
+      `SELECT id, COALESCE(shop_name, name) AS wholesaler_shop
+       FROM wholesalers
+       WHERE id = $1`,
+      [req.params.id]
+    );
+    const wholesaler = wholesalerResult.rows[0];
+    if (!wholesaler) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Wholesaler not found' });
+    }
+
+    const result = await client.query(
+      `UPDATE wholesale_products
+       SET expected_seller_profit = ROUND(
+             (COALESCE(NULLIF(final_price, 0), NULLIF(wholesale_price, 0), NULLIF(base_price, 0), 0) * $2::numeric / 100),
+             2
+           ),
+           admin_price_note = $3,
+           admin_reviewed_by = COALESCE($4, 'admin'),
+           updated_at = NOW()
+       WHERE wholesaler_id = $1
+       RETURNING id, name, wholesale_price, base_price, final_price, expected_seller_profit`,
+      [
+        req.params.id,
+        profitPercent,
+        `Expected seller profit set to ${profitPercent}% by admin.`,
+        req.user?.email || req.user?.role || 'admin',
+      ]
+    );
+
+    await client.query('COMMIT');
+    return res.json({
+      wholesaler,
+      profit_percent: profitPercent,
+      updated_count: result.rowCount,
+      products: result.rows.map(normalizeWholesaleProduct),
+      message: `Applied ${profitPercent}% expected seller profit to ${result.rowCount} wholesale product${result.rowCount === 1 ? '' : 's'} from ${wholesaler.wholesaler_shop}.`,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    return next(error);
+  } finally {
+    client.release();
+  }
+};
+
 const uploadAdminWholesaleProductImages = async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -1465,6 +1523,7 @@ module.exports = {
   getSellerWholesaleOrders,
   getAdminWholesaleProducts,
   reviewAdminWholesaleProduct,
+  applyWholesalerExpectedProfitPercent,
   uploadAdminWholesaleProductImages,
   resetAdminWholesaleProductFolderData,
   resetAllAdminWholesaleProductFolderData,

@@ -81,6 +81,7 @@ router.post('/wholesalers/:id/cnic-update-request', wholesaleController.requestW
 router.patch('/wholesalers/:id/cnic-update', wholesaleController.reviewWholesalerCnicUpdate);
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
 router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
+router.patch('/wholesalers/:id/wholesale-profit', wholesaleController.applyWholesalerExpectedProfitPercent);
 router.patch(
   '/wholesale/products/:id/images',
   productMediaFields([{ name: 'product_images', maxCount: 3 }]),
