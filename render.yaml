@@ -38,7 +38,7 @@ services:
       - key: SUPABASE_SIGNED_URL_TTL_SECONDS
         value: 3600
       - key: CORS_ORIGINS
-        value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com
+        value: https://poohter.com,https://www.poohter.com,https://seller.poohter.com,https://buyer.poohter.com,https://admin.poohter.com,https://topteam.poohter.com,https://wholesaler.poohter.com,https://wholeseller.poohter.com
       - key: PUBLIC_API_URL
         value: https://api.poohter.com
       - key: UPLOAD_ROOT

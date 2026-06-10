@@ -26,6 +26,7 @@ const productionOrigins = [
   'https://admin.poohter.com',
   'https://topteam.poohter.com',
   'https://wholesaler.poohter.com',
+  'https://wholeseller.poohter.com',
 ];
 
 const localOrigins = [
