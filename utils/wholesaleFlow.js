@@ -183,6 +183,7 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       name_urdu TEXT,
       description TEXT,
       wholesale_price NUMERIC(12,2) NOT NULL,
+      expected_seller_profit NUMERIC(12,2) DEFAULT 0,
       base_price NUMERIC(12,2),
       top_team_extra_cost NUMERIC(12,2) DEFAULT 0,
       final_price NUMERIC(12,2),
@@ -208,6 +209,7 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS admin_price_note TEXT,
       ADD COLUMN IF NOT EXISTS admin_reviewed_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS admin_reviewed_by TEXT,
+      ADD COLUMN IF NOT EXISTS expected_seller_profit NUMERIC(12,2) DEFAULT 0,
       ADD COLUMN IF NOT EXISTS base_price NUMERIC(12,2),
       ADD COLUMN IF NOT EXISTS top_team_extra_cost NUMERIC(12,2) DEFAULT 0,
       ADD COLUMN IF NOT EXISTS final_price NUMERIC(12,2),
@@ -387,6 +389,7 @@ const normalizeWholesaleProduct = (row) => {
     id: numberValue(row.id),
     wholesaler_id: numberValue(row.wholesaler_id),
     wholesale_price: numberValue(row.wholesale_price),
+    expected_seller_profit: numberValue(row.expected_seller_profit),
     base_price: numberValue(row.base_price ?? row.wholesale_price),
     top_team_extra_cost: numberValue(row.top_team_extra_cost),
     final_price: row.final_price == null ? null : numberValue(row.final_price),
@@ -406,6 +409,7 @@ const normalizeWholesaleOrder = (row) => ({
   linked_product_id: row.linked_product_id ? numberValue(row.linked_product_id) : null,
   quantity: numberValue(row.quantity),
   wholesale_unit_price: numberValue(row.wholesale_unit_price),
+  expected_seller_profit: numberValue(row.expected_seller_profit),
   total_price: numberValue(row.total_price),
   wholesale_price: numberValue(row.wholesale_price),
   min_order_quantity: numberValue(row.min_order_quantity),
@@ -420,6 +424,7 @@ const wholesaleOrderSelect = `
     wp.name_urdu AS product_name_urdu,
     wp.description AS product_description,
     wp.wholesale_price,
+    wp.expected_seller_profit,
     wp.min_order_quantity,
     wp.available_stock,
     wp.image_url,
@@ -465,6 +470,13 @@ const createSellerProductFromWholesaleOrder = async (client, order) => {
     return linkedProductId;
   }
 
+  const unitProfit = numberValue(order.expected_seller_profit);
+  const totalProfit = unitProfit * numberValue(order.quantity);
+  const priceDescription = [
+    `Seller price per product: Rs ${Math.round(numberValue(order.wholesale_unit_price)).toLocaleString()}.`,
+    unitProfit > 0 ? `Expected seller profit per product: Rs ${Math.round(unitProfit).toLocaleString()}.` : '',
+    unitProfit > 0 ? `Expected profit for this order stock (${numberValue(order.quantity)} units): Rs ${Math.round(totalProfit).toLocaleString()}.` : '',
+  ].filter(Boolean).join('\n');
   const insert = await client.query(
     `INSERT INTO products (
       name, name_urdu, price, admin_price, description, seller_id, status,
@@ -475,7 +487,11 @@ const createSellerProductFromWholesaleOrder = async (client, order) => {
       order.product_name,
       order.product_name_urdu || null,
       order.wholesale_unit_price,
-      `${order.product_description || ''}\n\nWholesale order ${order.order_code}. Seller invested ${order.quantity} units from ${order.wholesaler_shop}.`.trim(),
+      [
+        order.product_description || '',
+        priceDescription,
+        `Wholesale order ${order.order_code}. Seller invested ${order.quantity} units from ${order.wholesaler_shop}.`,
+      ].filter(Boolean).join('\n\n').trim(),
       order.seller_id,
       order.quantity,
       order.id,

@@ -150,6 +150,7 @@ const resetWholesaleProductFolderData = async (client, productId) => {
     `UPDATE wholesale_products
      SET name_urdu = NULL,
          description = NULL,
+         expected_seller_profit = 0,
          image_url = NULL,
          status = 'pending',
          admin_description_note = NULL,
@@ -857,6 +858,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
     const name = textValue(req.body.name);
     const description = textValue(req.body.description);
     const wholesalePrice = Number(req.body.wholesale_price);
+    const expectedSellerProfit = Number(req.body.expected_seller_profit);
     const minOrder = Number.parseInt(req.body.min_order_quantity, 10);
     const stock = Number.parseInt(req.body.available_stock, 10);
     const images = req.files?.product_images || [];
@@ -940,6 +942,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
            description = COALESCE($3, description),
            wholesale_price = COALESCE($4, wholesale_price),
            base_price = COALESCE($4, base_price, wholesale_price),
+           expected_seller_profit = COALESCE($12, expected_seller_profit, 0),
            top_team_extra_cost = CASE WHEN $11::boolean THEN 0 ELSE top_team_extra_cost END,
            final_price = CASE WHEN $11::boolean THEN NULL ELSE final_price END,
            pricing_status = CASE WHEN $11::boolean THEN 'pending_top_team' ELSE pricing_status END,
@@ -966,6 +969,7 @@ const reviewAdminWholesaleProduct = async (req, res, next) => {
         req.user?.email || req.user?.role || 'admin',
         req.params.id,
         resetPricing,
+        Number.isFinite(expectedSellerProfit) && expectedSellerProfit >= 0 ? expectedSellerProfit : null,
       ]
     );
     const imageCount = await countWholesaleProductImages(client, current.id);
