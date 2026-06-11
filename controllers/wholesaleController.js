@@ -730,14 +730,19 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
     const productId = Number(req.body.product_id || req.body.wholesale_product_id);
     const quantity = Number(req.body.quantity);
     const sellerNote = textValue(req.body.note);
+    const paymentReceipt = req.file ? publicUploadPath(req.file) : textValue(req.body.payment_receipt);
 
     if (!Number.isInteger(productId) || productId <= 0 || !Number.isFinite(quantity)) {
       return res.status(400).json({ error: 'Wholesale product and quantity are required' });
+    }
+    if (!paymentReceipt) {
+      return res.status(400).json({ error: 'Upload payment receipt before sending wholesale request' });
     }
 
     await client.query('BEGIN');
     await ensureWholesaleTables(client);
     await ensureStoredUploadsTable(client);
+    await persistUploadedFiles(req.file ? [req.file] : [], client);
     const productResult = await client.query(
       `SELECT wp.*, w.status AS wholesaler_status
        FROM wholesale_products wp
@@ -772,10 +777,10 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
     const orderResult = await client.query(
       `INSERT INTO wholesale_orders (
         order_code, seller_id, wholesaler_id, wholesale_product_id,
-        quantity, wholesale_unit_price, total_price, seller_note
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        quantity, wholesale_unit_price, total_price, seller_note, payment_receipt
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, unitPrice, totalPrice, sellerNote || null]
+      [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, unitPrice, totalPrice, sellerNote || null, publicUploadPathFromValue(paymentReceipt)]
     );
 
     await client.query('COMMIT');

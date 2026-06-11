@@ -288,6 +288,7 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       total_price NUMERIC(12,2) NOT NULL,
       status TEXT NOT NULL DEFAULT 'admin_review',
       seller_note TEXT,
+      payment_receipt TEXT,
       admin_note TEXT,
       wholesaler_note TEXT,
       requested_at TIMESTAMP DEFAULT NOW(),
@@ -295,6 +296,11 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       accepted_at TIMESTAMP,
       rejected_at TIMESTAMP
     )
+  `);
+
+  await clientOrPool.query(`
+    ALTER TABLE wholesale_orders
+      ADD COLUMN IF NOT EXISTS payment_receipt TEXT
   `);
 
   await clientOrPool.query(`

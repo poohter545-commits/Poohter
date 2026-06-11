@@ -78,7 +78,8 @@ const uploadDirs = [
   'products/videos',
   'sellers/cnic',
   'wholesalers/cnic',
-  'wholesale/products'
+  'wholesale/products',
+  'wholesale/payment-receipts'
 ];
 uploadDirs.forEach(dir => {
   ensureUploadDir(dir);

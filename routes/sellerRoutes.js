@@ -11,6 +11,7 @@ const { ensureUploadDir } = require('../utils/uploads');
 const PRODUCT_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const PRODUCT_VIDEO_LIMIT_BYTES = 10 * 1024 * 1024;
 const CNIC_UPLOAD_LIMIT_BYTES = 6 * 1024 * 1024;
+const PAYMENT_RECEIPT_LIMIT_BYTES = 8 * 1024 * 1024;
 
 // Multer Storage Configuration for Products
 const storage = multer.diskStorage({
@@ -19,6 +20,8 @@ const storage = multer.diskStorage({
       cb(null, ensureUploadDir('products/images'));
     } else if (file.fieldname === 'product_video') {
       cb(null, ensureUploadDir('products/videos'));
+    } else if (file.fieldname === 'payment_receipt') {
+      cb(null, ensureUploadDir('wholesale/payment-receipts'));
     } else {
       cb(null, ensureUploadDir('sellers/cnic'));
     }
@@ -45,6 +48,10 @@ const productUpload = multer({
         const isPhoto = /image\/(jpeg|jpg|png)/.test(file.mimetype);
         if (isPhoto) return cb(null, true);
         return cb(new Error('CNIC must be a JPG or PNG image'));
+    } else if (file.fieldname === 'payment_receipt') {
+        const isReceipt = /image\/(jpeg|jpg|png|webp)|application\/pdf/.test(file.mimetype);
+        if (isReceipt) return cb(null, true);
+        return cb(new Error('Payment receipt must be a JPG, PNG, WEBP, or PDF file'));
     }
     cb(new Error(`Unexpected upload field: ${file.fieldname}`));
   },
@@ -73,6 +80,20 @@ const uploadProductMedia = (req, res, next) => {
       if (video.size > PRODUCT_VIDEO_LIMIT_BYTES) return res.status(400).json({ error: 'Video exceeds 10MB limit' });
     }
 
+    next();
+  });
+};
+
+const uploadWholesalePaymentReceipt = (req, res, next) => {
+  const upload = productUpload.single('payment_receipt');
+  upload(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    }
+    if (err) return res.status(400).json({ error: err.message });
+    if (req.file && req.file.size > PAYMENT_RECEIPT_LIMIT_BYTES) {
+      return res.status(400).json({ error: 'Payment receipt must be 8MB or smaller' });
+    }
     next();
   });
 };
@@ -152,6 +173,6 @@ router.patch('/orders/:id/status', authMiddleware, isSeller, ensureApprovedSelle
 router.get('/payouts', authMiddleware, isSeller, ensureApprovedSeller, sellerController.getSellerPayouts);
 router.get('/wholesale/products', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.getWholesaleCatalogForSeller);
 router.get('/wholesale/orders', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.getSellerWholesaleOrders);
-router.post('/wholesale/orders', authMiddleware, isSeller, ensureApprovedSeller, wholesaleController.createWholesaleOrderForSeller);
+router.post('/wholesale/orders', authMiddleware, isSeller, ensureApprovedSeller, uploadWholesalePaymentReceipt, wholesaleController.createWholesaleOrderForSeller);
 
 module.exports = router;
