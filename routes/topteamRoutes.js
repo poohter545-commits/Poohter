@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const topteamController = require('../controllers/topteamController');
+const physicalShopRoutes = require('./physicalShopRoutes');
 const authMiddleware = require('../middleware/authMiddleware');
 const { isTopTeam } = require('../middleware/roles');
 
 router.post('/login', topteamController.login);
+router.use('/physical-shop-pos', authMiddleware, isTopTeam, physicalShopRoutes);
 router.get('/overview', authMiddleware, isTopTeam, topteamController.getOverview);
 router.post('/orders/:id/payment', authMiddleware, isTopTeam, topteamController.recordOrderPayment);
 router.post('/payouts/:sellerId/pay', authMiddleware, isTopTeam, topteamController.markSellerPayoutPaid);
@@ -16,5 +18,7 @@ router.post('/wholesale/products/:id/pricing', authMiddleware, isTopTeam, toptea
 router.post('/finance/order-cost', authMiddleware, isTopTeam, topteamController.saveOrderCost);
 router.post('/marketing-spend', authMiddleware, isTopTeam, topteamController.addMarketingSpend);
 router.post('/targets', authMiddleware, isTopTeam, topteamController.addBusinessTarget);
+router.get('/physical-shop/reports', authMiddleware, isTopTeam, topteamController.getPhysicalShopReports);
+router.use('/physical-shop', authMiddleware, isTopTeam, physicalShopRoutes);
 
 module.exports = router;

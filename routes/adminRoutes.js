@@ -6,6 +6,7 @@ const adminController = require('../controllers/adminController');
 const wholesaleController = require('../controllers/wholesaleController');
 const supportController = require('../controllers/supportController');
 const warehouseReceivingController = require('../controllers/warehouseReceivingController');
+const physicalShopRoutes = require('./physicalShopRoutes');
 const authMiddleware = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/roles');
 const { ensureUploadDir } = require('../utils/uploads');
@@ -61,6 +62,8 @@ router.get('/documents/:accountType/:id/cnic/:side', adminController.getSignedCn
 
 // Protect review and operations routes
 router.use(authMiddleware, isAdmin);
+
+router.use('/physical-shop', physicalShopRoutes);
 
 router.get('/dashboard', adminController.getDashboardStats);
 router.get('/users', adminController.getAllUsers);

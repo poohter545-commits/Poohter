@@ -6,6 +6,7 @@ const { ensureEmailOtpTable } = require('../../utils/emailOtp');
 const { ensureOrderChargeColumns } = require('../../utils/orderCharges');
 const { ensureSupportRequestsTable } = require('../../utils/supportRequests');
 const { ensureWarehouseReceivingTable } = require('../../utils/warehouseReceiving');
+const { ensurePhysicalShopTables } = require('../../utils/physicalShop');
 
 const ensureCoreTables = async (clientOrPool) => {
   await ensureWholesaleTables(clientOrPool);
@@ -65,6 +66,7 @@ const ensureCoreTables = async (clientOrPool) => {
   await ensureOrderChargeColumns(clientOrPool);
   await ensureSupportRequestsTable(clientOrPool);
   await ensureWarehouseReceivingTable(clientOrPool);
+  await ensurePhysicalShopTables(clientOrPool);
 };
 
 const initProductionDb = async () => {

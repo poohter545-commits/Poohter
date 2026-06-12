@@ -20,6 +20,7 @@ const {
   getOrderItemsSubtotal,
 } = require('../utils/orderCharges');
 const { ensureReturnsTable } = require('../utils/returns');
+const { ensurePhysicalShopTables } = require('../utils/physicalShop');
 
 const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 
@@ -1537,6 +1538,138 @@ const addBusinessTarget = async (req, res, next) => {
   }
 };
 
+const getPhysicalShopReports = async (req, res, next) => {
+  try {
+    await ensurePhysicalShopTables(pool);
+    const shopId = req.query.shop_id ? Number(req.query.shop_id) : null;
+    const since = textValue(req.query.since) || new Date().toISOString().slice(0, 10);
+
+    const [
+      shops,
+      summary,
+      payments,
+      bestSellers,
+      branchSales,
+      cashierSales,
+      refunds,
+      recentSales,
+      movements,
+    ] = await Promise.all([
+      pool.query('SELECT id, name, city, active FROM physical_shops ORDER BY active DESC, name ASC'),
+      pool.query(
+        `SELECT
+           COUNT(*) AS sale_count,
+           COALESCE(SUM(total_amount), 0) AS gross_sales,
+           COALESCE(SUM(discount_amount), 0) AS discounts,
+           COALESCE(SUM(tax_amount), 0) AS tax,
+           COALESCE(SUM(refund_amount), 0) AS refunds
+         FROM shop_sales
+         WHERE ($1::int IS NULL OR shop_id = $1)
+           AND created_at::date >= $2::date`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT payment_method, COUNT(*) AS sale_count, COALESCE(SUM(total_amount), 0) AS total
+         FROM shop_sales
+         WHERE ($1::int IS NULL OR shop_id = $1)
+           AND created_at::date >= $2::date
+         GROUP BY payment_method
+         ORDER BY total DESC`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT p.id, p.name, p.product_uid, SUM(ssi.quantity) AS quantity_sold, SUM(ssi.total_price) AS sales_total
+         FROM shop_sale_items ssi
+         JOIN shop_sales ss ON ss.id = ssi.sale_id
+         JOIN products p ON p.id = ssi.product_id
+         WHERE ($1::int IS NULL OR ss.shop_id = $1)
+           AND ss.created_at::date >= $2::date
+         GROUP BY p.id
+         ORDER BY quantity_sold DESC, sales_total DESC
+         LIMIT 12`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT ps.id, ps.name, COUNT(ss.id) AS sale_count, COALESCE(SUM(ss.total_amount), 0) AS total
+         FROM physical_shops ps
+         LEFT JOIN shop_sales ss ON ss.shop_id = ps.id AND ss.created_at::date >= $2::date
+         WHERE ($1::int IS NULL OR ps.id = $1)
+         GROUP BY ps.id
+         ORDER BY total DESC, ps.name ASC`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT st.id, st.user_name, ps.name AS shop_name, COUNT(ss.id) AS sale_count, COALESCE(SUM(ss.total_amount), 0) AS total
+         FROM shop_staff st
+         JOIN physical_shops ps ON ps.id = st.shop_id
+         LEFT JOIN shop_sales ss ON ss.cashier_id = st.id AND ss.created_at::date >= $2::date
+         WHERE ($1::int IS NULL OR st.shop_id = $1)
+         GROUP BY st.id, ps.name
+         ORDER BY total DESC, st.user_name ASC
+         LIMIT 20`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT sr.*, ss.receipt_code, ps.name AS shop_name, st.user_name AS processed_by_name
+         FROM shop_returns sr
+         JOIN shop_sales ss ON ss.id = sr.sale_id
+         JOIN physical_shops ps ON ps.id = ss.shop_id
+         LEFT JOIN shop_staff st ON st.id = sr.processed_by
+         WHERE ($1::int IS NULL OR ss.shop_id = $1)
+           AND sr.created_at::date >= $2::date
+         ORDER BY sr.created_at DESC
+         LIMIT 50`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT ss.*, ps.name AS shop_name, st.user_name AS cashier_name
+         FROM shop_sales ss
+         JOIN physical_shops ps ON ps.id = ss.shop_id
+         LEFT JOIN shop_staff st ON st.id = ss.cashier_id
+         WHERE ($1::int IS NULL OR ss.shop_id = $1)
+           AND ss.created_at::date >= $2::date
+         ORDER BY ss.created_at DESC
+         LIMIT 80`,
+        [shopId, since]
+      ),
+      pool.query(
+        `SELECT sm.*, ps.name AS shop_name, p.name AS product_name, p.product_uid
+         FROM shop_stock_movements sm
+         JOIN physical_shops ps ON ps.id = sm.shop_id
+         JOIN products p ON p.id = sm.product_id
+         WHERE ($1::int IS NULL OR sm.shop_id = $1)
+           AND sm.created_at::date >= $2::date
+         ORDER BY sm.created_at DESC
+         LIMIT 80`,
+        [shopId, since]
+      ),
+    ]);
+
+    const row = summary.rows[0] || {};
+    res.json({
+      since,
+      shops: shops.rows,
+      summary: {
+        sale_count: numberValue(row.sale_count),
+        gross_sales: numberValue(row.gross_sales),
+        discounts: numberValue(row.discounts),
+        tax: numberValue(row.tax),
+        refunds: numberValue(row.refunds),
+        net_sales: numberValue(row.gross_sales) - numberValue(row.refunds),
+      },
+      payments: payments.rows.map((item) => ({ ...item, sale_count: numberValue(item.sale_count), total: numberValue(item.total) })),
+      best_sellers: bestSellers.rows.map((item) => ({ ...item, quantity_sold: numberValue(item.quantity_sold), sales_total: numberValue(item.sales_total) })),
+      branch_sales: branchSales.rows.map((item) => ({ ...item, sale_count: numberValue(item.sale_count), total: numberValue(item.total) })),
+      cashier_sales: cashierSales.rows.map((item) => ({ ...item, sale_count: numberValue(item.sale_count), total: numberValue(item.total) })),
+      refunds: refunds.rows.map((item) => ({ ...item, refund_amount: numberValue(item.refund_amount) })),
+      recent_sales: recentSales.rows.map((item) => ({ ...item, total_amount: numberValue(item.total_amount), refund_amount: numberValue(item.refund_amount) })),
+      movements: movements.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
   getOverview,
@@ -1549,5 +1682,6 @@ module.exports = {
   approveWholesaleProductPricing,
   saveOrderCost,
   addMarketingSpend,
-  addBusinessTarget
+  addBusinessTarget,
+  getPhysicalShopReports
 };
