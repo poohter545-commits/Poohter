@@ -12,6 +12,7 @@
     "db:seed-buyer-demo": "node scripts/seedBuyerDemoProducts.js",
     "db:remove-demo": "node scripts/removeDemoData.js",
     "db:clear-operational": "node scripts/clearOperationalData.js --yes",
+    "db:repair-images": "node scripts/repairProductImages.js",
     "test": "node --check server.js && node --check config/db.js && node --check routes/api.js && node --check routes/sellerRoutes.js && node --check routes/adminRoutes.js && node --check routes/legalRoutes.js && node --check controllers/authController.js && node --check controllers/orderController.js && node --check controllers/sellerController.js && node --check controllers/adminController.js && node --check controllers/legalController.js && node --check utils/emailOtp.js && node --check utils/orderNotifications.js && node --check utils/orderLookup.js && node --check utils/phoneValidation.js && node --check utils/returns.js"
   },
   "keywords": [],
@@ -23,6 +24,8 @@
     "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "pg": "^8.20.0"

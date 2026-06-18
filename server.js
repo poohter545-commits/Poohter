@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const dotenv = require('dotenv');
 const path = require('path');
 const pool = require('./config/db');
@@ -17,6 +18,10 @@ const { UPLOAD_ROOT, ensureUploadDir, isPrivateCnicPath, serveStoredUpload } = r
 dotenv.config();
 
 const app = express();
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
 const productionOrigins = [
   'https://poohter.com',
@@ -53,13 +58,13 @@ const allowedOrigins = new Set([
 
 const isAllowedOrigin = (origin) => {
   if (!origin || allowedOrigins.has(origin)) return true;
-  if (origin === 'null') return true;
 
   try {
     const { hostname, protocol } = new URL(origin);
     if (['localhost', '127.0.0.1', '[::1]'].includes(hostname)) return true;
 
-    const isPoohterDeployHost = hostname.includes('poohter') && [
+    // Only allow deploy hostnames that start exactly with "poohter" or "poohter-"
+    const isPoohterDeployHost = (hostname === 'poohter' || hostname.startsWith('poohter.') || hostname.startsWith('poohter-')) && [
       '.onrender.com',
       '.vercel.app',
       '.netlify.app',

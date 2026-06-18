@@ -75,6 +75,16 @@ const publicUploadPathFromValue = (value = '') => {
   const normalized = normalizeUploadPath(decodePathSafely(value));
   if (!normalized) return '';
 
+  const relativeMediaMatch = normalized.match(/^(?:api\/)?media\?(?:.*&)?(?:src|path)=([^&]+)/i);
+  if (relativeMediaMatch) {
+    return publicUploadPathFromValue(relativeMediaMatch[1]);
+  }
+
+  const relativeApiMediaMatch = normalized.match(/^(?:api\/)?media\/(.+)$/i);
+  if (relativeApiMediaMatch) {
+    return publicUploadPathFromValue(relativeApiMediaMatch[1]);
+  }
+
   if (/^https?:\/\//i.test(normalized)) {
     try {
       const url = new URL(normalized);
@@ -130,6 +140,12 @@ const storedPathCandidates = (value = '') => {
   const withoutUploads = normalized.replace(/^uploads\//, '');
   if (withoutUploads && withoutUploads !== normalized) add(withoutUploads);
   if (withoutUploads && /^(products|sellers|wholesalers|wholesale)\//.test(withoutUploads)) add(`uploads/${withoutUploads}`);
+
+  const fileName = withoutUploads.split('/').filter(Boolean).pop();
+  if (fileName && /^cnic_/i.test(fileName)) {
+    add(`uploads/sellers/cnic/${fileName}`);
+    add(`uploads/wholesalers/cnic/${fileName}`);
+  }
 
   if (/^https?:\/\//i.test(String(value || ''))) {
     const parsed = parseSupabaseStorageSource(value);
@@ -454,10 +470,34 @@ const serveMediaSource = async (source, res, next, options = {}) => {
   return true;
 };
 
+const ALLOWED_REMOTE_HOSTS = /^[a-z0-9-]+\.(supabase\.co|supabase\.in|supabase\.com)$/i;
+
+const isAllowedMediaSource = (source) => {
+  const normalized = publicUploadPathFromValue(source);
+  if (/^uploads\//.test(normalized)) return true;
+
+  if (/^https?:\/\//i.test(normalized)) {
+    try {
+      const url = new URL(normalized);
+      if (url.protocol !== 'https:') return false;
+      return ALLOWED_REMOTE_HOSTS.test(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+};
+
 const proxyMedia = async (req, res, next) => {
   try {
     const source = String(req.query.src || req.query.path || '').trim();
     if (!source) return res.status(400).json({ error: 'Media source is required' });
+
+    if (!isAllowedMediaSource(source)) {
+      return res.status(403).json({ error: 'Media source not allowed' });
+    }
+
     await serveMediaSource(source, res, next);
     return undefined;
   } catch (error) {
