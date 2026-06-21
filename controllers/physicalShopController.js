@@ -1044,7 +1044,7 @@ const receiveAll = async (req, res, next) => {
       await client.query(
         `INSERT INTO shop_stock_movements (shop_id, product_id, movement_type, quantity_change, reference_type, reference_id, note)
          VALUES ($1, $2, 'transfer_in', $3, 'shop_transfer_batch', $4, $5)`,
-        [batch.shop_id, batch.product_id, unitsToAdd, batch.id, `Batch receive: ${batchCode}`]
+        [batch.shop_id, batch.product_id, unitsToAdd, batch.id, `Batch receive: ${batch.batch_code || batch.id}`]
       );
     }
 
