@@ -989,9 +989,9 @@ const getReports = async (req, res, next) => {
 const receiveAll = async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const batchCode = textValue(req.params.batch_code);
+    const transferId = Number(req.params.id);
     const shopId = req.body.shop_id ? Number(req.body.shop_id) : null;
-    if (!batchCode) return res.status(400).json({ error: 'Batch code is required' });
+    if (!Number.isInteger(transferId) || transferId <= 0) return res.status(400).json({ error: 'Transfer ID is required' });
 
     await client.query('BEGIN');
     await ensurePhysicalShopTables(client);
@@ -1001,9 +1001,9 @@ const receiveAll = async (req, res, next) => {
        FROM shop_transfer_batches stb
        JOIN products p ON p.id = stb.product_id
        JOIN physical_shops ps ON ps.id = stb.shop_id
-       WHERE stb.batch_code = $1
+       WHERE stb.id = $1
        FOR UPDATE OF stb`,
-      [batchCode]
+      [transferId]
     );
     const batch = batchResult.rows[0];
     if (!batch) {
@@ -1065,7 +1065,7 @@ const receiveAll = async (req, res, next) => {
     );
 
     await client.query('COMMIT');
-    const transfer = await getTransferBatch(pool, batchCode);
+    const transfer = await getTransferBatch(pool, String(batch.id));
     res.json({
       message: `${batch.product_name} — ${quantity} unit(s) received and added to inventory`,
       transfer,
