@@ -225,7 +225,7 @@ const searchProducts = async (req, res, next) => {
     ].join(' OR ');
     const result = await pool.query(
       `SELECT
-         p.id, p.name, p.product_uid, p.price, p.admin_price, p.image_url, p.status,
+         p.id, p.name, p.product_uid, p.price, p.admin_price, p.physical_shop_price, p.image_url, p.status,
          COALESCE(si.quantity_available, 0) AS shop_stock,
          COALESCE(si.reorder_level, 0) AS reorder_level,
          COALESCE(i.stock_quantity, 0) AS warehouse_stock
@@ -241,7 +241,8 @@ const searchProducts = async (req, res, next) => {
     );
     res.json(result.rows.map((row) => ({
       ...row,
-      price: Number(row.admin_price || row.price || 0),
+      price: row.physical_shop_price != null ? Number(row.physical_shop_price) : Number(row.admin_price || row.price || 0),
+      physical_shop_price: row.physical_shop_price != null ? Number(row.physical_shop_price) : null,
       shop_stock: Number(row.shop_stock || 0),
       reorder_level: Number(row.reorder_level || 0),
       warehouse_stock: Number(row.warehouse_stock || 0),
@@ -261,6 +262,7 @@ const getShopInventory = async (req, res, next) => {
          p.product_uid,
          p.price,
          p.admin_price,
+         p.physical_shop_price,
          p.image_url,
          ps.name AS shop_name,
          COALESCE(i.stock_quantity, 0) AS warehouse_stock
@@ -278,6 +280,8 @@ const getShopInventory = async (req, res, next) => {
       reorder_level: Number(row.reorder_level || 0),
       warehouse_stock: Number(row.warehouse_stock || 0),
       low_stock: Number(row.quantity_available || 0) <= Number(row.reorder_level || 0),
+      physical_shop_price: row.physical_shop_price != null ? Number(row.physical_shop_price) : null,
+      selling_price: row.physical_shop_price != null ? Number(row.physical_shop_price) : Number(row.price || 0),
     })));
   } catch (error) {
     next(error);
