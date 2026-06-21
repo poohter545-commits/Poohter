@@ -1674,7 +1674,7 @@ const getPhysicalShopReports = async (req, res, next) => {
 
 const listPhysicalShopPricing = async (req, res, next) => {
   try {
-    await ensureSchema();
+    await ensureExecutiveTables();
     const result = await pool.query(
       `SELECT id, name, product_uid, price, admin_price, physical_shop_price, physical_shop_priced_at, status
        FROM products
@@ -1694,7 +1694,7 @@ const listPhysicalShopPricing = async (req, res, next) => {
 
 const setPhysicalShopPrice = async (req, res, next) => {
   try {
-    await ensureSchema();
+    await ensureExecutiveTables();
     const productId = Number(req.params.id);
     const price = Number(req.body.physical_shop_price);
     if (!Number.isInteger(productId) || productId <= 0) return res.status(400).json({ error: 'Invalid product ID' });
