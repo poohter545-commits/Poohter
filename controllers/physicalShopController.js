@@ -1065,7 +1065,8 @@ const receiveAll = async (req, res, next) => {
     );
 
     await client.query('COMMIT');
-    const transfer = await getTransferBatch(pool, String(batch.id));
+    let transfer = null;
+    try { transfer = await getTransferBatch(pool, String(batch.id)); } catch (_) { /* best-effort */ }
     res.json({
       message: `${batch.product_name} — ${quantity} unit(s) received and added to inventory`,
       transfer,

@@ -121,8 +121,10 @@ const ensurePhysicalShopTables = async (clientOrPool) => {
       product_id INTEGER NOT NULL REFERENCES products(id),
       quantity INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'out_from_warehouse',
+      reorder_level INTEGER NOT NULL DEFAULT 0,
       created_by TEXT,
       note TEXT,
+      received_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW(),
       CONSTRAINT shop_transfer_batch_status_check CHECK (status IN ('out_from_warehouse', 'received', 'cancelled'))
     )
@@ -138,10 +140,20 @@ const ensurePhysicalShopTables = async (clientOrPool) => {
       tracking_id TEXT NOT NULL UNIQUE,
       barcode_value TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL DEFAULT 'out_from_warehouse',
+      stock_added BOOLEAN DEFAULT FALSE,
+      received_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW(),
       CONSTRAINT shop_physical_unit_status_check CHECK (status IN ('out_from_warehouse', 'in_shop', 'sold', 'returned', 'damaged', 'lost'))
     )
   `);
+
+  await clientOrPool.query('ALTER TABLE shop_transfer_batches ADD COLUMN IF NOT EXISTS batch_code TEXT');
+  await clientOrPool.query('ALTER TABLE shop_transfer_batches ADD COLUMN IF NOT EXISTS received_at TIMESTAMP');
+  await clientOrPool.query('ALTER TABLE shop_transfer_batches ADD COLUMN IF NOT EXISTS reorder_level INTEGER NOT NULL DEFAULT 0');
+  await clientOrPool.query('ALTER TABLE shop_physical_units ADD COLUMN IF NOT EXISTS stock_added BOOLEAN');
+  await clientOrPool.query('UPDATE shop_physical_units SET stock_added = TRUE WHERE stock_added IS NULL');
+  await clientOrPool.query('ALTER TABLE shop_physical_units ALTER COLUMN stock_added SET DEFAULT FALSE');
+  await clientOrPool.query('ALTER TABLE shop_physical_units ADD COLUMN IF NOT EXISTS received_at TIMESTAMP');
 
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS shop_returns (
