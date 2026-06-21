@@ -212,6 +212,7 @@ const searchProducts = async (req, res, next) => {
     await ensurePhysicalShopTables(pool);
     const query = textValue(req.query.q);
     const shopId = req.query.shop_id ? Number(req.query.shop_id) : null;
+    const warehouseOnly = req.query.warehouse_only === 'true';
     const columns = await getProductSearchColumns(pool);
     const extraChecks = [];
     if (columns.has('product_uid')) extraChecks.push('LOWER(COALESCE(p.product_uid, \'\')) LIKE LOWER($1)');
@@ -226,20 +227,24 @@ const searchProducts = async (req, res, next) => {
       `SELECT
          p.id, p.name, p.product_uid, p.price, p.admin_price, p.image_url, p.status,
          COALESCE(si.quantity_available, 0) AS shop_stock,
-         COALESCE(si.reorder_level, 0) AS reorder_level
+         COALESCE(si.reorder_level, 0) AS reorder_level,
+         COALESCE(i.stock_quantity, 0) AS warehouse_stock
        FROM products p
        LEFT JOIN shop_inventory si ON si.product_id = p.id AND ($3::int IS NULL OR si.shop_id = $3)
+       LEFT JOIN inventory i ON i.product_id = p.id AND i.warehouse_id = 1
        WHERE ($4::boolean OR COALESCE(p.status, 'pending') = 'live')
+         AND ($5::boolean = FALSE OR COALESCE(i.stock_quantity, 0) > 0)
          AND (${searchable})
-       ORDER BY p.name ASC
+       ORDER BY COALESCE(i.stock_quantity, 0) DESC, p.name ASC
        LIMIT 30`,
-      [`%${query}%`, query, shopId, req.query.include_all === 'true']
+      [`%${query}%`, query, shopId, req.query.include_all === 'true', warehouseOnly]
     );
     res.json(result.rows.map((row) => ({
       ...row,
       price: Number(row.admin_price || row.price || 0),
       shop_stock: Number(row.shop_stock || 0),
       reorder_level: Number(row.reorder_level || 0),
+      warehouse_stock: Number(row.warehouse_stock || 0),
     })));
   } catch (error) {
     next(error);
@@ -294,7 +299,9 @@ const getTransferBatch = async (clientOrPool, batchIdOrCode) => {
          'physical_uid', spu.physical_uid,
          'tracking_id', spu.tracking_id,
          'barcode_value', spu.barcode_value,
-         'status', spu.status
+         'status', spu.status,
+         'stock_added', spu.stock_added,
+         'received_at', spu.received_at
        ) ORDER BY spu.id) FILTER (WHERE spu.id IS NOT NULL), '[]') AS units
      FROM shop_transfer_batches stb
      JOIN physical_shops ps ON ps.id = stb.shop_id
@@ -376,22 +383,12 @@ const createWarehouseTransfer = async (req, res, next) => {
       [quantity, productId]
     );
 
-    await client.query(
-      `INSERT INTO shop_inventory (shop_id, product_id, quantity_available, reorder_level)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (shop_id, product_id)
-       DO UPDATE SET quantity_available = shop_inventory.quantity_available + EXCLUDED.quantity_available,
-                     reorder_level = GREATEST(shop_inventory.reorder_level, EXCLUDED.reorder_level),
-                     updated_at = NOW()`,
-      [shopId, productId, quantity, reorderLevel]
-    );
-
     const batchCode = await createBatchCode(client);
     const batch = await client.query(
-      `INSERT INTO shop_transfer_batches (batch_code, shop_id, product_id, quantity, created_by, note)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO shop_transfer_batches (batch_code, shop_id, product_id, quantity, reorder_level, created_by, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [batchCode, shopId, productId, quantity, String(req.user?.email || req.user?.id || 'admin'), note || null]
+      [batchCode, shopId, productId, quantity, reorderLevel, String(req.user?.email || req.user?.id || 'admin'), note || null]
     );
 
     const batchId = batch.rows[0].id;
@@ -405,12 +402,6 @@ const createWarehouseTransfer = async (req, res, next) => {
         [batchId, shopId, productId, physicalUid, trackingId, trackingId]
       );
     }
-
-    await client.query(
-      `INSERT INTO shop_stock_movements (shop_id, product_id, movement_type, quantity_change, reference_type, reference_id, note)
-       VALUES ($1, $2, 'transfer_in', $3, 'shop_transfer_batch', $4, $5)`,
-      [shopId, productId, quantity, batchId, note || batchCode]
-    );
 
     await client.query('COMMIT');
     const transfer = await getTransferBatch(pool, batchCode);
@@ -431,6 +422,118 @@ const getTransfer = async (req, res, next) => {
     res.json({ transfer });
   } catch (error) {
     next(error);
+  }
+};
+
+const receiveTransferScan = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const code = textValue(req.body.barcode_value || req.body.barcode || req.body.tracking_id || req.body.physical_uid);
+    const shopId = req.body.shop_id ? Number(req.body.shop_id) : null;
+    if (!code) return res.status(400).json({ error: 'Barcode, tracking ID, or physical ID is required' });
+
+    await client.query('BEGIN');
+    await ensurePhysicalShopTables(client);
+
+    const unitResult = await client.query(
+      `SELECT
+         spu.*,
+         stb.batch_code,
+         stb.status AS batch_status,
+         stb.reorder_level,
+         p.name AS product_name,
+         ps.name AS shop_name
+       FROM shop_physical_units spu
+       JOIN shop_transfer_batches stb ON stb.id = spu.batch_id
+       JOIN products p ON p.id = spu.product_id
+       JOIN physical_shops ps ON ps.id = spu.shop_id
+       WHERE LOWER(spu.barcode_value) = LOWER($1)
+          OR LOWER(spu.tracking_id) = LOWER($1)
+          OR LOWER(spu.physical_uid) = LOWER($1)
+       FOR UPDATE OF spu, stb`,
+      [code]
+    );
+    const unit = unitResult.rows[0];
+    if (!unit) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No physical shop transfer unit found for this scan' });
+    }
+    if (shopId && Number(unit.shop_id) !== shopId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `This barcode belongs to ${unit.shop_name}, not the selected shop` });
+    }
+    if (['sold', 'damaged', 'lost'].includes(unit.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `This unit is already marked ${unit.status}` });
+    }
+
+    if (unit.status !== 'in_shop') {
+      if (!unit.stock_added) {
+        await client.query(
+          `INSERT INTO shop_inventory (shop_id, product_id, quantity_available, reorder_level)
+           VALUES ($1, $2, 1, $3)
+           ON CONFLICT (shop_id, product_id)
+           DO UPDATE SET quantity_available = shop_inventory.quantity_available + 1,
+                         reorder_level = GREATEST(shop_inventory.reorder_level, EXCLUDED.reorder_level),
+                         updated_at = NOW()`,
+          [unit.shop_id, unit.product_id, Math.max(0, Number(unit.reorder_level || 0))]
+        );
+        await client.query(
+          `INSERT INTO shop_stock_movements (shop_id, product_id, movement_type, quantity_change, reference_type, reference_id, note)
+           VALUES ($1, $2, 'transfer_in', 1, 'shop_physical_unit', $3, $4)`,
+          [unit.shop_id, unit.product_id, unit.id, unit.batch_code]
+        );
+      }
+      await client.query(
+        `UPDATE shop_physical_units
+         SET status = 'in_shop',
+             stock_added = TRUE,
+             received_at = COALESCE(received_at, NOW())
+         WHERE id = $1`,
+        [unit.id]
+      );
+    }
+
+    const counts = await client.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE status IN ('in_shop', 'sold', 'returned', 'damaged', 'lost'))::int AS received
+       FROM shop_physical_units
+       WHERE batch_id = $1`,
+      [unit.batch_id]
+    );
+    const total = Number(counts.rows[0]?.total || 0);
+    const received = Number(counts.rows[0]?.received || 0);
+    if (total > 0 && received >= total) {
+      await client.query(
+        `UPDATE shop_transfer_batches
+         SET status = 'received',
+             received_at = COALESCE(received_at, NOW())
+         WHERE id = $1`,
+        [unit.batch_id]
+      );
+    }
+
+    await client.query('COMMIT');
+    const transfer = await getTransferBatch(pool, unit.batch_code);
+    res.json({
+      message: `${unit.product_name} received by ${unit.shop_name}`,
+      unit: {
+        id: unit.id,
+        physical_uid: unit.physical_uid,
+        tracking_id: unit.tracking_id,
+        barcode_value: unit.barcode_value,
+        status: 'in_shop',
+      },
+      received_count: received,
+      total_count: total,
+      transfer,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -883,6 +986,98 @@ const getReports = async (req, res, next) => {
   }
 };
 
+const receiveAll = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const batchCode = textValue(req.params.batch_code);
+    const shopId = req.body.shop_id ? Number(req.body.shop_id) : null;
+    if (!batchCode) return res.status(400).json({ error: 'Batch code is required' });
+
+    await client.query('BEGIN');
+    await ensurePhysicalShopTables(client);
+
+    const batchResult = await client.query(
+      `SELECT stb.*, p.name AS product_name, ps.name AS shop_name
+       FROM shop_transfer_batches stb
+       JOIN products p ON p.id = stb.product_id
+       JOIN physical_shops ps ON ps.id = stb.shop_id
+       WHERE stb.batch_code = $1
+       FOR UPDATE OF stb`,
+      [batchCode]
+    );
+    const batch = batchResult.rows[0];
+    if (!batch) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transfer batch not found' });
+    }
+    if (shopId && Number(batch.shop_id) !== shopId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `This batch belongs to ${batch.shop_name}, not the selected shop` });
+    }
+    if (batch.status === 'received') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'This batch has already been received' });
+    }
+
+    const unitCheck = await client.query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE stock_added = TRUE)::int AS already_added
+       FROM shop_physical_units WHERE batch_id = $1`,
+      [batch.id]
+    );
+    const existingUnits = Number(unitCheck.rows[0]?.total || 0);
+    const alreadyAdded = Number(unitCheck.rows[0]?.already_added || 0);
+    const quantity = Number(batch.quantity || 0);
+
+    const unitsToAdd = existingUnits === 0 ? quantity : Math.max(0, existingUnits - alreadyAdded);
+
+    if (unitsToAdd > 0) {
+      await client.query(
+        `INSERT INTO shop_inventory (shop_id, product_id, quantity_available, reorder_level)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (shop_id, product_id)
+         DO UPDATE SET quantity_available = shop_inventory.quantity_available + EXCLUDED.quantity_available,
+                       reorder_level = GREATEST(shop_inventory.reorder_level, EXCLUDED.reorder_level),
+                       updated_at = NOW()`,
+        [batch.shop_id, batch.product_id, unitsToAdd, Math.max(0, Number(batch.reorder_level || 0))]
+      );
+      await client.query(
+        `INSERT INTO shop_stock_movements (shop_id, product_id, movement_type, quantity_change, reference_type, reference_id, note)
+         VALUES ($1, $2, 'transfer_in', $3, 'shop_transfer_batch', $4, $5)`,
+        [batch.shop_id, batch.product_id, unitsToAdd, batch.id, `Batch receive: ${batchCode}`]
+      );
+    }
+
+    if (existingUnits > 0) {
+      await client.query(
+        `UPDATE shop_physical_units
+         SET status = 'in_shop', stock_added = TRUE, received_at = COALESCE(received_at, NOW())
+         WHERE batch_id = $1 AND status = 'out_from_warehouse'`,
+        [batch.id]
+      );
+    }
+
+    await client.query(
+      `UPDATE shop_transfer_batches
+       SET status = 'received', received_at = COALESCE(received_at, NOW())
+       WHERE id = $1`,
+      [batch.id]
+    );
+
+    await client.query('COMMIT');
+    const transfer = await getTransferBatch(pool, batchCode);
+    res.json({
+      message: `${batch.product_name} — ${quantity} unit(s) received and added to inventory`,
+      transfer,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   listShops,
   createShop,
@@ -895,6 +1090,8 @@ module.exports = {
   listTransfers,
   createWarehouseTransfer,
   getTransfer,
+  receiveTransferScan,
+  receiveAll,
   adjustStock,
   completeSale,
   listSales,

@@ -17,6 +17,8 @@ router.get('/inventory', physicalShopController.getShopInventory);
 router.post('/inventory/adjust', physicalShopController.adjustStock);
 router.get('/transfers', physicalShopController.listTransfers);
 router.post('/transfers', physicalShopController.createWarehouseTransfer);
+router.post('/transfers/receive-scan', physicalShopController.receiveTransferScan);
+router.post('/transfers/:batch_code/receive-all', physicalShopController.receiveAll);
 router.get('/transfers/:id', physicalShopController.getTransfer);
 
 router.post('/sales', physicalShopController.completeSale);
