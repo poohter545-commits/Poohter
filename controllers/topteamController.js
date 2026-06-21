@@ -83,7 +83,9 @@ const ensureExecutiveTables = async () => {
   await pool.query(`
     ALTER TABLE products
       ADD COLUMN IF NOT EXISTS admin_price NUMERIC(12,2),
-      ADD COLUMN IF NOT EXISTS topteam_priced_at TIMESTAMP
+      ADD COLUMN IF NOT EXISTS topteam_priced_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS physical_shop_price NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS physical_shop_priced_at TIMESTAMP
   `);
   await pool.query(`
     UPDATE products
@@ -1670,6 +1672,48 @@ const getPhysicalShopReports = async (req, res, next) => {
   }
 };
 
+const listPhysicalShopPricing = async (req, res, next) => {
+  try {
+    await ensureSchema();
+    const result = await pool.query(
+      `SELECT id, name, product_uid, price, admin_price, physical_shop_price, physical_shop_priced_at, status
+       FROM products
+       WHERE status NOT IN ('deleted', 'rejected')
+       ORDER BY name ASC`
+    );
+    res.json(result.rows.map((row) => ({
+      ...row,
+      price: numberValue(row.price),
+      admin_price: numberValue(row.admin_price),
+      physical_shop_price: row.physical_shop_price != null ? numberValue(row.physical_shop_price) : null,
+    })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const setPhysicalShopPrice = async (req, res, next) => {
+  try {
+    await ensureSchema();
+    const productId = Number(req.params.id);
+    const price = Number(req.body.physical_shop_price);
+    if (!Number.isInteger(productId) || productId <= 0) return res.status(400).json({ error: 'Invalid product ID' });
+    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: 'Price must be a non-negative number' });
+
+    const result = await pool.query(
+      `UPDATE products
+       SET physical_shop_price = $1, physical_shop_priced_at = NOW()
+       WHERE id = $2
+       RETURNING id, name, product_uid, price, admin_price, physical_shop_price, physical_shop_priced_at`,
+      [price, productId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Product not found' });
+    res.json({ product: result.rows[0], message: `Physical shop price set to Rs ${Math.round(price).toLocaleString()} for ${result.rows[0].name}` });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
   getOverview,
@@ -1683,5 +1727,7 @@ module.exports = {
   saveOrderCost,
   addMarketingSpend,
   addBusinessTarget,
-  getPhysicalShopReports
+  getPhysicalShopReports,
+  listPhysicalShopPricing,
+  setPhysicalShopPrice,
 };

@@ -19,6 +19,8 @@ router.post('/finance/order-cost', authMiddleware, isTopTeam, topteamController.
 router.post('/marketing-spend', authMiddleware, isTopTeam, topteamController.addMarketingSpend);
 router.post('/targets', authMiddleware, isTopTeam, topteamController.addBusinessTarget);
 router.get('/physical-shop/reports', authMiddleware, isTopTeam, topteamController.getPhysicalShopReports);
+router.get('/physical-shop-pricing', authMiddleware, isTopTeam, topteamController.listPhysicalShopPricing);
+router.post('/products/:id/physical-shop-price', authMiddleware, isTopTeam, topteamController.setPhysicalShopPrice);
 router.use('/physical-shop', authMiddleware, isTopTeam, physicalShopRoutes);
 
 module.exports = router;
