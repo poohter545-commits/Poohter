@@ -43,6 +43,8 @@ const normalizeProduct = (req, product) => {
     image,
     product_images: productImages,
     media_files: normalizeMediaFiles(req, product.media_files),
+    rating: Number(product.rating || 0),
+    review_count: Number(product.review_count || 0),
   };
 };
 
@@ -98,7 +100,9 @@ const getProducts = async (req, res, next) => {
         p.created_at,
         COALESCE(inventory_stock.stock_quantity, 0) AS stock_quantity,
         COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
-        COALESCE(media.media_files, '[]'::json) AS media_files
+        COALESCE(media.media_files, '[]'::json) AS media_files,
+        COALESCE(review_stats.rating, 0) AS rating,
+        COALESCE(review_stats.review_count, 0) AS review_count
        FROM products p
        LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(i.stock_quantity), 0) AS stock_quantity
@@ -118,6 +122,11 @@ const getProducts = async (req, res, next) => {
         FROM product_media pm
         WHERE pm.product_id = p.id
        ) media ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT ROUND(AVG(pr.rating)::NUMERIC, 1) AS rating, COUNT(*)::INT AS review_count
+        FROM product_reviews pr
+        WHERE pr.product_id = p.id
+       ) review_stats ON TRUE
        WHERE COALESCE(p.status, 'live') = 'live'
        ORDER BY p.created_at DESC, p.id DESC
        LIMIT $1 OFFSET $2`,
@@ -150,7 +159,9 @@ const getProductById = async (req, res, next) => {
         p.created_at,
         COALESCE(inventory_stock.stock_quantity, 0) AS stock_quantity,
         COALESCE(image_files.product_images, ARRAY[]::TEXT[]) AS product_images,
-        COALESCE(media.media_files, '[]'::json) AS media_files
+        COALESCE(media.media_files, '[]'::json) AS media_files,
+        COALESCE(review_stats.rating, 0) AS rating,
+        COALESCE(review_stats.review_count, 0) AS review_count
        FROM products p
        LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(i.stock_quantity), 0) AS stock_quantity
@@ -170,6 +181,11 @@ const getProductById = async (req, res, next) => {
         FROM product_media pm
         WHERE pm.product_id = p.id
        ) media ON TRUE
+       LEFT JOIN LATERAL (
+        SELECT ROUND(AVG(pr.rating)::NUMERIC, 1) AS rating, COUNT(*)::INT AS review_count
+        FROM product_reviews pr
+        WHERE pr.product_id = p.id
+       ) review_stats ON TRUE
        WHERE p.id = $1 AND COALESCE(p.status, 'live') = 'live'
        LIMIT 1`,
       [id]
