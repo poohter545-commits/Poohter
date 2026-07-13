@@ -18,6 +18,7 @@ const {
   textValue,
   numberValue,
   wholesaleOrderSelect,
+  sanitizeWholesaleForSeller,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
 } = require('../utils/wholesaleFlow');
@@ -212,7 +213,7 @@ const registerWholesaler = async (req, res, next) => {
         cnic_number, cnic_front, cnic_back, bank_name, account_title, account_number,
         mobile_wallet, status
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'pending')
-       RETURNING *`,
+      RETURNING *`,
       [
         textValue(name),
         cleanEmail,
@@ -679,9 +680,7 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
     const result = await pool.query(
       `SELECT
         wp.*,
-        COALESCE(w.shop_name, w.name) AS wholesaler_shop,
-        w.city AS wholesaler_city,
-        w.phone AS wholesaler_phone,
+        w.anonymous_code AS wholesaler_code,
         COALESCE(
           COUNT(DISTINCT wpm.file_path)
           + CASE
@@ -712,7 +711,7 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
        ORDER BY wp.created_at DESC`
     );
     res.json(result.rows.map(row => ({
-      ...normalizeWholesaleProductUploads(row),
+      ...sanitizeWholesaleForSeller(normalizeWholesaleProductUploads(row)),
       image_count: numberValue(row.image_count),
       wholesale_price: numberValue(row.final_price ?? row.wholesale_price),
       final_price: row.final_price == null ? null : numberValue(row.final_price),
@@ -783,8 +782,9 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
       [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, unitPrice, totalPrice, sellerNote || null, publicUploadPathFromValue(paymentReceipt)]
     );
 
+    const createdOrder = await client.query(`${wholesaleOrderSelect} WHERE wo.id = $1`, [orderResult.rows[0].id]);
     await client.query('COMMIT');
-    res.status(201).json({ order: normalizeWholesaleOrder(orderResult.rows[0]) });
+    res.status(201).json({ order: sanitizeWholesaleForSeller(normalizeWholesaleOrder(createdOrder.rows[0] || orderResult.rows[0])) });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
@@ -802,7 +802,7 @@ const getSellerWholesaleOrders = async (req, res, next) => {
        ORDER BY wo.requested_at DESC`,
       [req.user.id]
     );
-    res.json(result.rows.map(normalizeWholesaleOrder));
+    res.json(result.rows.map(row => sanitizeWholesaleForSeller(normalizeWholesaleOrder(row))));
   } catch (error) {
     next(error);
   }
@@ -1164,46 +1164,6 @@ const resetAdminWholesaleProductFolderData = async (req, res, next) => {
   }
 };
 
-const resetAllAdminWholesaleProductFolderData = async (req, res, next) => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await ensureWholesaleTables(client);
-
-    const productsResult = await client.query(
-      `SELECT id
-       FROM wholesale_products wp
-       WHERE wp.admin_reviewed_at IS NOT NULL
-          OR wp.admin_reviewed_by IS NOT NULL
-          OR COALESCE(wp.admin_description_note, '') <> ''
-          OR COALESCE(wp.admin_price_note, '') <> ''
-       ORDER BY wp.id
-       FOR UPDATE`
-    );
-
-    let removedUploadCount = 0;
-    for (const product of productsResult.rows) {
-      const resetResult = await resetWholesaleProductFolderData(client, product.id);
-      removedUploadCount += resetResult.removedUploadCount;
-    }
-
-    await client.query('COMMIT');
-    const resetCount = productsResult.rows.length;
-    return res.json({
-      reset_count: resetCount,
-      removed_uploads: removedUploadCount,
-      message: resetCount
-        ? `Old folder data removed for ${resetCount} wholesale product${resetCount === 1 ? '' : 's'}. Upload the folders again from admin.`
-        : 'No wholesale products had admin folder data to reset.',
-    });
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => null);
-    return next(error);
-  } finally {
-    client.release();
-  }
-};
-
 const deleteAdminWholesaleProduct = async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -1531,7 +1491,6 @@ module.exports = {
   applyWholesalerExpectedProfitPercent,
   uploadAdminWholesaleProductImages,
   resetAdminWholesaleProductFolderData,
-  resetAllAdminWholesaleProductFolderData,
   deleteAdminWholesaleProduct,
   getAdminWholesalers,
   updateAdminWholesalerStatus,

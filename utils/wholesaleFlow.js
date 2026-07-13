@@ -171,7 +171,13 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS pending_cnic_back TEXT,
       ADD COLUMN IF NOT EXISTS pending_cnic_uploaded_at TIMESTAMP,
       ADD COLUMN IF NOT EXISTS cnic_update_reviewed_at TIMESTAMP,
-      ADD COLUMN IF NOT EXISTS cnic_update_rejection_reason TEXT
+      ADD COLUMN IF NOT EXISTS cnic_update_rejection_reason TEXT,
+      ADD COLUMN IF NOT EXISTS anonymous_code TEXT UNIQUE
+  `);
+  await clientOrPool.query(`
+    UPDATE wholesalers
+    SET anonymous_code = 'WS-' || UPPER(SUBSTR(MD5(id::text || random()::text || clock_timestamp()::text), 1, 6))
+    WHERE COALESCE(anonymous_code, '') = ''
   `);
 
   await clientOrPool.query(`
@@ -422,6 +428,33 @@ const normalizeWholesaleOrder = (row) => ({
   available_stock: numberValue(row.available_stock),
 });
 
+// Fields a seller must never receive about a wholesaler. Sellers only see the
+// stable anonymous_code (wholesaler_code) and non-identifying product data.
+const WHOLESALER_PRIVATE_FIELDS = [
+  'wholesaler_id',
+  'wholesaler_shop',
+  'wholesaler_name',
+  'wholesaler_email',
+  'wholesaler_phone',
+  'wholesaler_city',
+  'wholesaler_bank_name',
+  'wholesaler_account_title',
+  'wholesaler_account_number',
+  'wholesaler_mobile_wallet',
+];
+
+const wholesalerDisplayName = (code) => (code ? `Wholesaler ${code}` : 'Wholesaler');
+
+const sanitizeWholesaleForSeller = (record) => {
+  const safe = { ...record };
+  for (const field of WHOLESALER_PRIVATE_FIELDS) {
+    delete safe[field];
+  }
+  safe.wholesaler_code = record.wholesaler_code || null;
+  safe.wholesaler_display = wholesalerDisplayName(record.wholesaler_code);
+  return safe;
+};
+
 const wholesaleOrderSelect = `
   SELECT
     wo.*,
@@ -440,6 +473,7 @@ const wholesaleOrderSelect = `
     s.phone AS seller_phone,
     s.city AS seller_city,
     s.cnic_number AS seller_public_id,
+    w.anonymous_code AS wholesaler_code,
     COALESCE(w.shop_name, w.name) AS wholesaler_shop,
     w.name AS wholesaler_name,
     w.email AS wholesaler_email,
@@ -496,7 +530,7 @@ const createSellerProductFromWholesaleOrder = async (client, order) => {
       [
         order.product_description || '',
         priceDescription,
-        `Wholesale order ${order.order_code}. Seller invested ${order.quantity} units from ${order.wholesaler_shop}.`,
+        `Wholesale order ${order.order_code}. Seller invested ${order.quantity} units from ${wholesalerDisplayName(order.wholesaler_code)}.`,
       ].filter(Boolean).join('\n\n').trim(),
       order.seller_id,
       order.quantity,
@@ -557,6 +591,8 @@ module.exports = {
   textValue,
   numberValue,
   wholesaleOrderSelect,
+  sanitizeWholesaleForSeller,
+  wholesalerDisplayName,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
 };
