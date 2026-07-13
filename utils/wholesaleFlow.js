@@ -309,6 +309,39 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
       ADD COLUMN IF NOT EXISTS payment_receipt TEXT
   `);
 
+  // Exclusive ownership: once a seller's order on a wholesale product is
+  // accepted, that product is retired from the shared catalog and belongs
+  // to that seller alone. 'reserved' locks it while an order awaits admin
+  // review so a second seller cannot buy the same product concurrently.
+  await clientOrPool.query(`
+    ALTER TABLE wholesale_products
+      ADD COLUMN IF NOT EXISTS ownership_status TEXT NOT NULL DEFAULT 'available',
+      ADD COLUMN IF NOT EXISTS owner_seller_id INTEGER REFERENCES sellers(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS owning_order_id INTEGER REFERENCES wholesale_orders(id) ON DELETE SET NULL
+  `);
+  await clientOrPool.query(`
+    WITH migration AS (
+      INSERT INTO wholesale_schema_migrations (key)
+      VALUES ('wholesale_ownership_backfill')
+      ON CONFLICT (key) DO NOTHING
+      RETURNING key
+    )
+    UPDATE wholesale_products wp
+    SET ownership_status = CASE WHEN latest.status = 'accepted' THEN 'owned' ELSE 'reserved' END,
+        owner_seller_id = latest.seller_id,
+        owning_order_id = latest.id,
+        updated_at = NOW()
+    FROM (
+      SELECT DISTINCT ON (wholesale_product_id) id, wholesale_product_id, seller_id, status
+      FROM wholesale_orders
+      WHERE status IN ('admin_review', 'approved_by_admin', 'accepted')
+      ORDER BY wholesale_product_id, requested_at DESC
+    ) latest
+    WHERE EXISTS (SELECT 1 FROM migration)
+      AND wp.id = latest.wholesale_product_id
+      AND COALESCE(wp.ownership_status, 'available') = 'available'
+  `);
+
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS wholesale_payouts (
       id SERIAL PRIMARY KEY,
@@ -407,10 +440,18 @@ const normalizeWholesaleProduct = (row) => {
     final_price: row.final_price == null ? null : numberValue(row.final_price),
     min_order_quantity: numberValue(row.min_order_quantity),
     available_stock: numberValue(row.available_stock),
+    ownership_status: row.ownership_status || 'available',
+    owner_seller_id: row.owner_seller_id == null ? null : numberValue(row.owner_seller_id),
+    owning_order_id: row.owning_order_id == null ? null : numberValue(row.owning_order_id),
     media_files: mediaFiles,
     product_images: productImagePaths(row, mediaFiles),
   };
 };
+
+// A wholesale product can only ever be ordered once it is 'available'. It
+// flips to 'reserved' the instant a seller places an order (locking it for
+// everyone else) and to 'owned' once that order is accepted.
+const WHOLESALE_PRODUCT_AVAILABLE_WHERE = "COALESCE(wp.ownership_status, 'available') = 'available'";
 
 const normalizeWholesaleOrder = (row) => ({
   ...row,
@@ -467,6 +508,8 @@ const wholesaleOrderSelect = `
     wp.min_order_quantity,
     wp.available_stock,
     wp.image_url,
+    wp.ownership_status AS product_ownership_status,
+    wp.owner_seller_id AS product_owner_seller_id,
     COALESCE(s.shop_name, s.name) AS seller_shop,
     s.name AS seller_name,
     s.email AS seller_email,
@@ -593,6 +636,7 @@ module.exports = {
   wholesaleOrderSelect,
   sanitizeWholesaleForSeller,
   wholesalerDisplayName,
+  WHOLESALE_PRODUCT_AVAILABLE_WHERE,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
 };

@@ -12,6 +12,12 @@ const {
   cnicUpdateSelectFields,
   normalizeCnicUpdateFields,
 } = require('../utils/cnicUpdates');
+const {
+  ensureRefreshTokenColumns,
+  issueTokenPair,
+  storeRefreshToken,
+  verifyRefreshToken,
+} = require('../utils/refreshTokens');
 
 /**
  * Helper to generate JWT for Sellers
@@ -223,6 +229,7 @@ const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     await ensureCnicUpdateColumns(pool, 'sellers');
+    await ensureRefreshTokenColumns(pool, 'sellers');
     const result = await pool.query('SELECT * FROM sellers WHERE email = $1', [email]);
     const seller = result.rows[0];
 
@@ -238,7 +245,8 @@ const login = async (req, res, next) => {
       });
     }
 
-    const token = generateToken(seller);
+    const { accessToken, refreshToken, jti } = issueTokenPair({ id: seller.id, email: seller.email, role: 'seller' });
+    await storeRefreshToken(pool, 'sellers', seller.id, jti);
     res.json({
       message: 'Login successful',
       seller: {
@@ -250,8 +258,42 @@ const login = async (req, res, next) => {
         status: seller.status,
         ...normalizeCnicUpdateFields(seller)
       },
-      token
+      token: accessToken,
+      refreshToken,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const refreshSellerToken = async (req, res, next) => {
+  try {
+    const refreshToken = String(req.body?.refreshToken || '').trim();
+    if (!refreshToken) return res.status(400).json({ error: 'Refresh token is required' });
+
+    await ensureRefreshTokenColumns(pool, 'sellers');
+    const seller = await verifyRefreshToken(pool, 'sellers', 'seller', refreshToken);
+    if (!seller) return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    if (seller.status !== 'approved') {
+      return res.status(403).json({ error: sellerApprovalPendingMessage, status: seller.status || 'pending', requiresApproval: true });
+    }
+
+    const { accessToken, refreshToken: nextRefreshToken, jti } = issueTokenPair({ id: seller.id, email: seller.email, role: 'seller' });
+    await storeRefreshToken(pool, 'sellers', seller.id, jti);
+    res.json({ token: accessToken, refreshToken: nextRefreshToken });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const logoutSeller = async (req, res, next) => {
+  try {
+    await ensureRefreshTokenColumns(pool, 'sellers');
+    await pool.query(
+      `UPDATE sellers SET refresh_token_jti = NULL, refresh_token_expires_at = NULL WHERE id = $1`,
+      [req.user.id]
+    );
+    res.json({ message: 'Logged out' });
   } catch (error) {
     next(error);
   }
@@ -667,6 +709,8 @@ module.exports = {
   register,
   verifySellerRegistration,
   login,
+  refreshSellerToken,
+  logoutSeller,
   getProfile,
   uploadCnicUpdate,
   createProduct,

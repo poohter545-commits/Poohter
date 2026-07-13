@@ -19,6 +19,7 @@ const {
   numberValue,
   wholesaleOrderSelect,
   sanitizeWholesaleForSeller,
+  WHOLESALE_PRODUCT_AVAILABLE_WHERE,
   createSellerProductFromWholesaleOrder,
   receiptLinesForWholesaleOrder,
 } = require('../utils/wholesaleFlow');
@@ -41,6 +42,7 @@ const wholesaleProductLiveWhere = `
     ) wholesale_product_images
     JOIN uploaded_files uf ON uf.file_path = wholesale_product_images.media_path
   ) >= ${MIN_WHOLESALE_PRODUCT_IMAGES}
+  AND ${WHOLESALE_PRODUCT_AVAILABLE_WHERE}
 `;
 
 const generateWholesalerToken = (wholesaler) => jwt.sign(
@@ -592,6 +594,19 @@ const acceptWholesaleOrderForActor = async (req, res, next, { admin = false } = 
       );
     }
 
+    // Finalize exclusive ownership: this wholesale product retires from the
+    // shared catalog for good and belongs to the seller who ordered it. From
+    // here on, restocking their store copy of the product is an admin job,
+    // not a re-purchase of this wholesale listing.
+    await client.query(
+      `UPDATE wholesale_products
+       SET ownership_status = 'owned',
+           owner_seller_id = COALESCE(owner_seller_id, $1),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [order.seller_id, order.wholesale_product_id]
+    );
+
     const body = req.body || {};
     const note = textValue(body.note) || (admin ? 'Admin accepted this wholesale order for the wholesaler.' : null);
     await client.query(
@@ -632,10 +647,26 @@ const acceptWholesaleOrder = (req, res, next) => acceptWholesaleOrderForActor(re
 
 const acceptWholesaleOrderByAdmin = (req, res, next) => acceptWholesaleOrderForActor(req, res, next, { admin: true });
 
+const releaseWholesaleProductReservation = async (client, order) => {
+  await client.query(
+    `UPDATE wholesale_products
+     SET ownership_status = 'available',
+         owner_seller_id = NULL,
+         owning_order_id = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+       AND owning_order_id = $2
+       AND ownership_status = 'reserved'`,
+    [order.wholesale_product_id, order.id]
+  );
+};
+
 const rejectWholesaleOrderByWholesaler = async (req, res, next) => {
+  const client = await pool.connect();
   try {
-    await ensureWholesaleTables(pool);
-    const result = await pool.query(
+    await client.query('BEGIN');
+    await ensureWholesaleTables(client);
+    const result = await client.query(
       `UPDATE wholesale_orders
        SET status = 'rejected',
            wholesaler_note = $1,
@@ -646,10 +677,18 @@ const rejectWholesaleOrderByWholesaler = async (req, res, next) => {
        RETURNING *`,
       [textValue(req.body?.note) || 'Wholesaler rejected this request', req.params.id, req.user.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Approved wholesale order not found' });
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Approved wholesale order not found' });
+    }
+    await releaseWholesaleProductReservation(client, result.rows[0]);
+    await client.query('COMMIT');
     res.json({ order: normalizeWholesaleOrder(result.rows[0]) });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => null);
     next(error);
+  } finally {
+    client.release();
   }
 };
 
@@ -742,6 +781,10 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
     await ensureWholesaleTables(client);
     await ensureStoredUploadsTable(client);
     await persistUploadedFiles(req.file ? [req.file] : [], client);
+    // Lock the product row before checking it so a concurrent order from a
+    // different seller can't slip in between the availability check and the
+    // reservation update below (prevents two sellers "buying" the same
+    // exclusive product at once).
     const productResult = await client.query(
       `SELECT wp.*, w.status AS wholesaler_status
        FROM wholesale_products wp
@@ -751,13 +794,14 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
          AND ${wholesaleProductLiveWhere}
          AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
          AND COALESCE(wp.final_price, 0) > 0
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE OF wp`,
       [productId]
     );
     const product = productResult.rows[0];
     if (!product || product.wholesaler_status !== 'approved') {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Active wholesale product not found' });
+      return res.status(409).json({ error: 'This product is no longer available. It may have already been purchased by another seller.' });
     }
 
     const minOrder = Math.max(MIN_WHOLESALE_ORDER_QUANTITY, Number(product.min_order_quantity || MIN_WHOLESALE_ORDER_QUANTITY));
@@ -781,10 +825,29 @@ const createWholesaleOrderForSeller = async (req, res, next) => {
        RETURNING *`,
       [orderCode, req.user.id, product.wholesaler_id, product.id, quantity, unitPrice, totalPrice, sellerNote || null, publicUploadPathFromValue(paymentReceipt)]
     );
+    const order = orderResult.rows[0];
 
-    const createdOrder = await client.query(`${wholesaleOrderSelect} WHERE wo.id = $1`, [orderResult.rows[0].id]);
+    // Reserve the product for this seller/order right away so it disappears
+    // from every other seller's browsing and can't be ordered a second time
+    // while admin review is pending.
+    const reserveResult = await client.query(
+      `UPDATE wholesale_products
+       SET ownership_status = 'reserved',
+           owner_seller_id = $1,
+           owning_order_id = $2,
+           updated_at = NOW()
+       WHERE id = $3
+         AND COALESCE(ownership_status, 'available') = 'available'`,
+      [req.user.id, order.id, product.id]
+    );
+    if (reserveResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This product is no longer available. It may have already been purchased by another seller.' });
+    }
+
+    const createdOrder = await client.query(`${wholesaleOrderSelect} WHERE wo.id = $1`, [order.id]);
     await client.query('COMMIT');
-    res.status(201).json({ order: sanitizeWholesaleForSeller(normalizeWholesaleOrder(createdOrder.rows[0] || orderResult.rows[0])) });
+    res.status(201).json({ order: sanitizeWholesaleForSeller(normalizeWholesaleOrder(createdOrder.rows[0] || order)) });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
@@ -820,6 +883,7 @@ const getAdminWholesaleProducts = async (req, res, next) => {
         w.phone AS wholesaler_phone,
         w.city AS wholesaler_city,
         w.cnic_number AS wholesaler_cnic_number,
+        COALESCE(os.shop_name, os.name) AS owner_shop_name,
         COUNT(DISTINCT wpm.file_path)
           + CASE
               WHEN COALESCE(wp.image_url, '') <> ''
@@ -837,7 +901,8 @@ const getAdminWholesaleProducts = async (req, res, next) => {
        FROM wholesale_products wp
        JOIN wholesalers w ON wp.wholesaler_id = w.id
        LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
-       GROUP BY wp.id, w.id
+       LEFT JOIN sellers os ON os.id = wp.owner_seller_id
+       GROUP BY wp.id, w.id, os.id
        ORDER BY
          CASE WHEN wp.status = 'pending' THEN 0 WHEN wp.status = 'topteam_pending' THEN 1 WHEN wp.status = 'active' THEN 2 ELSE 3 END,
          wp.created_at DESC`
@@ -1448,23 +1513,37 @@ const reviewWholesaleOrderByAdmin = async (req, res, next) => {
       return acceptWholesaleOrderForActor(req, res, next, { admin: true });
     }
 
-    const result = await pool.query(
-      `UPDATE wholesale_orders
-       SET status = $1,
-           admin_note = $2,
-           admin_reviewed_at = NOW(),
-           rejected_at = CASE WHEN $1 = 'rejected' THEN NOW() ELSE rejected_at END
-       WHERE (id::text = $3 OR order_code = $3)
-         AND status = 'admin_review'
-       RETURNING *`,
-      [status, note || null, req.params.id]
-    );
-    if (!result.rows.length) {
-      return res.status(404).json({ error: 'Wholesale order pending admin review was not found' });
-    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `UPDATE wholesale_orders
+         SET status = $1,
+             admin_note = $2,
+             admin_reviewed_at = NOW(),
+             rejected_at = CASE WHEN $1 = 'rejected' THEN NOW() ELSE rejected_at END
+         WHERE (id::text = $3 OR order_code = $3)
+           AND status = 'admin_review'
+         RETURNING *`,
+        [status, note || null, req.params.id]
+      );
+      if (!result.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Wholesale order pending admin review was not found' });
+      }
+      if (status === 'rejected') {
+        await releaseWholesaleProductReservation(client, result.rows[0]);
+      }
 
-    const refreshed = await pool.query(`${wholesaleOrderSelect} WHERE wo.id = $1`, [result.rows[0].id]);
-    res.json({ order: normalizeWholesaleOrder(refreshed.rows[0]) });
+      const refreshed = await client.query(`${wholesaleOrderSelect} WHERE wo.id = $1`, [result.rows[0].id]);
+      await client.query('COMMIT');
+      res.json({ order: normalizeWholesaleOrder(refreshed.rows[0]) });
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => null);
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     next(error);
   }
