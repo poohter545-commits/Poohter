@@ -712,43 +712,52 @@ const getWholesalerPayouts = async (req, res, next) => {
   }
 };
 
+const queryWholesaleCatalog = async () => {
+  await ensureWholesaleTables(pool);
+  await ensureStoredUploadsTable(pool);
+  return pool.query(
+    `SELECT
+      wp.*,
+      w.anonymous_code AS wholesaler_code,
+      COALESCE(
+        COUNT(DISTINCT wpm.file_path)
+        + CASE
+            WHEN COALESCE(wp.image_url, '') <> ''
+              AND COUNT(wpm.id) FILTER (WHERE wpm.file_path = wp.image_url) = 0
+            THEN 1
+            ELSE 0
+          END,
+        0
+      ) AS image_count,
+      COALESCE(
+        json_agg(
+          json_build_object('id', wpm.id, 'type', 'image', 'file_path', wpm.file_path)
+          ORDER BY wpm.id
+        ) FILTER (WHERE wpm.id IS NOT NULL),
+        '[]'::json
+      ) AS media_files
+     FROM wholesale_products wp
+     JOIN wholesalers w ON wp.wholesaler_id = w.id
+     LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
+     WHERE wp.status = 'active'
+       AND ${wholesaleProductLiveWhere}
+       AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
+       AND COALESCE(wp.final_price, 0) > 0
+       AND w.status = 'approved'
+       AND wp.available_stock >= wp.min_order_quantity
+     GROUP BY wp.id, w.id
+     ORDER BY wp.created_at DESC`
+  );
+};
+
+// Fields that reveal wholesale pricing. Guests (unauthenticated browsing)
+// must never receive these in the API response — hiding them only in the
+// UI would still leak prices in the raw network response.
+const WHOLESALE_PRICE_FIELDS = ['wholesale_price', 'final_price', 'base_price', 'top_team_extra_cost', 'expected_seller_profit'];
+
 const getWholesaleCatalogForSeller = async (req, res, next) => {
   try {
-    await ensureWholesaleTables(pool);
-    await ensureStoredUploadsTable(pool);
-    const result = await pool.query(
-      `SELECT
-        wp.*,
-        w.anonymous_code AS wholesaler_code,
-        COALESCE(
-          COUNT(DISTINCT wpm.file_path)
-          + CASE
-              WHEN COALESCE(wp.image_url, '') <> ''
-                AND COUNT(wpm.id) FILTER (WHERE wpm.file_path = wp.image_url) = 0
-              THEN 1
-              ELSE 0
-            END,
-          0
-        ) AS image_count,
-        COALESCE(
-          json_agg(
-            json_build_object('id', wpm.id, 'type', 'image', 'file_path', wpm.file_path)
-            ORDER BY wpm.id
-          ) FILTER (WHERE wpm.id IS NOT NULL),
-          '[]'::json
-        ) AS media_files
-       FROM wholesale_products wp
-       JOIN wholesalers w ON wp.wholesaler_id = w.id
-       LEFT JOIN wholesale_product_media wpm ON wpm.wholesale_product_id = wp.id
-       WHERE wp.status = 'active'
-         AND ${wholesaleProductLiveWhere}
-         AND COALESCE(wp.pricing_status, 'pending_top_team') = 'approved'
-         AND COALESCE(wp.final_price, 0) > 0
-         AND w.status = 'approved'
-         AND wp.available_stock >= wp.min_order_quantity
-       GROUP BY wp.id, w.id
-       ORDER BY wp.created_at DESC`
-    );
+    const result = await queryWholesaleCatalog();
     res.json(result.rows.map(row => ({
       ...sanitizeWholesaleForSeller(normalizeWholesaleProductUploads(row)),
       image_count: numberValue(row.image_count),
@@ -757,6 +766,23 @@ const getWholesaleCatalogForSeller = async (req, res, next) => {
       base_price: numberValue(row.base_price ?? row.wholesale_price),
       top_team_extra_cost: numberValue(row.top_team_extra_cost),
     })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getWholesaleCatalogForGuest = async (req, res, next) => {
+  try {
+    const result = await queryWholesaleCatalog();
+    res.json(result.rows.map(row => {
+      const product = sanitizeWholesaleForSeller(normalizeWholesaleProductUploads(row));
+      for (const field of WHOLESALE_PRICE_FIELDS) delete product[field];
+      return {
+        ...product,
+        image_count: numberValue(row.image_count),
+        price_hidden: true,
+      };
+    }));
   } catch (error) {
     next(error);
   }
@@ -1563,6 +1589,7 @@ module.exports = {
   rejectWholesaleOrderByWholesaler,
   getWholesalerPayouts,
   getWholesaleCatalogForSeller,
+  getWholesaleCatalogForGuest,
   createWholesaleOrderForSeller,
   getSellerWholesaleOrders,
   getAdminWholesaleProducts,
