@@ -6,6 +6,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const { isTopTeam } = require('../middleware/roles');
 
 router.post('/login', topteamController.login);
+router.post('/refresh', authMiddleware, isTopTeam, topteamController.refreshToken);
 router.use('/physical-shop-pos', authMiddleware, isTopTeam, physicalShopRoutes);
 router.get('/overview', authMiddleware, isTopTeam, topteamController.getOverview);
 router.post('/orders/:id/payment', authMiddleware, isTopTeam, topteamController.recordOrderPayment);

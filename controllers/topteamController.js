@@ -27,7 +27,7 @@ const PROFIT_RATE = DEFAULT_COMMISSION_RATE;
 const generateTopTeamToken = () => jwt.sign(
   { id: 'topteam', email: 'topteam@poohter.local', role: 'topteam' },
   JWT_SECRET,
-  { expiresIn: '12h' }
+  { expiresIn: '30d' }
 );
 
 const numberValue = (value) => Number(value || 0);
@@ -186,6 +186,13 @@ const login = async (req, res) => {
     token: generateTopTeamToken(),
     user: { name: 'Poohter Top Team', role: 'topteam' }
   });
+};
+
+// Sliding session: any authenticated topteam client can trade its current
+// (still-valid) token for a fresh 30-day one, so an actively used panel
+// never hits a hard expiry.
+const refreshToken = (req, res) => {
+  res.json({ token: generateTopTeamToken() });
 };
 
 const getOverview = async (req, res, next) => {
@@ -1716,6 +1723,7 @@ const setPhysicalShopPrice = async (req, res, next) => {
 
 module.exports = {
   login,
+  refreshToken,
   getOverview,
   markSellerPayoutPaid,
   recordOrderPayment,

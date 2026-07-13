@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
-const { JWT_SECRET } = require('../config/auth');
+const { JWT_SECRET, CNIC_JWT_SECRET } = require('../config/auth');
 const { createUniqueOrderCode, validateStatusTransition } = require('../utils/orderIdentity');
 const { ensureSalesPlatformsTable, getSalesPlatforms } = require('../utils/salesPlatforms');
 const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
@@ -35,7 +35,7 @@ const {
 const generateAdminToken = () => jwt.sign(
   { id: 'admin', email: 'admin@poohter.local', role: 'admin' },
   JWT_SECRET,
-  { expiresIn: '12h' }
+  { expiresIn: '30d' }
 );
 
 const signCnicDocumentToken = ({ accountType, accountId, side }) => jwt.sign(
@@ -45,7 +45,7 @@ const signCnicDocumentToken = ({ accountType, accountId, side }) => jwt.sign(
     accountId: String(accountId),
     side,
   },
-  JWT_SECRET,
+  CNIC_JWT_SECRET,
   { expiresIn: process.env.CNIC_DOCUMENT_TOKEN_TTL || '10m' }
 );
 
@@ -291,15 +291,22 @@ const hasWarehouseReceiptScan = async (clientOrPool, productId) => {
   return result.rows.length > 0;
 };
 
+if (!process.env.ADMIN_PASSWORD && !process.env.ADMIN_RECOVERY_PASSWORD) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('ADMIN_PASSWORD must be set in production');
+  } else {
+    console.warn('[security] ADMIN_PASSWORD is not set — admin login will always fail');
+  }
+}
+
 const login = async (req, res) => {
   const { password } = req.body;
   const allowedPasswords = new Set([
     process.env.ADMIN_PASSWORD,
     process.env.ADMIN_RECOVERY_PASSWORD,
-    'admin123',
   ].filter(Boolean));
 
-  if (!allowedPasswords.has(password)) {
+  if (!allowedPasswords.size || !allowedPasswords.has(password)) {
     return res.status(401).json({ error: 'Invalid admin password' });
   }
 
@@ -307,6 +314,13 @@ const login = async (req, res) => {
     token: generateAdminToken(),
     admin: { name: 'Poohter Admin', role: 'admin' }
   });
+};
+
+// Sliding session: an authenticated admin client can trade its current
+// (still-valid) token for a fresh 30-day one, so an actively used panel
+// never hits a hard expiry.
+const refreshToken = (req, res) => {
+  res.json({ token: generateAdminToken() });
 };
 
 const getDashboardStats = async (req, res, next) => {
@@ -399,7 +413,7 @@ const getSignedCnicDocument = async (req, res, next) => {
 
     let payload;
     try {
-      payload = jwt.verify(token, JWT_SECRET);
+      payload = jwt.verify(token, CNIC_JWT_SECRET);
     } catch {
       return res.status(401).json({ error: 'CNIC document link expired or invalid' });
     }
@@ -1576,6 +1590,7 @@ const updateReturnStatus = async (req, res, next) => {
 
 module.exports = {
   login,
+  refreshToken,
   getDashboardStats,
   getAllUsers,
   getAllSellers,

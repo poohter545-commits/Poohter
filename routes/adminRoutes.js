@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 const wholesaleController = require('../controllers/wholesaleController');
@@ -10,6 +11,14 @@ const physicalShopRoutes = require('./physicalShopRoutes');
 const authMiddleware = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/roles');
 const { ensureUploadDir } = require('../utils/uploads');
+
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many admin login attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const PRODUCT_MEDIA_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 
@@ -57,11 +66,13 @@ const productMediaFields = (fields) => (req, res, next) => {
   });
 };
 
-router.post('/login', adminController.login);
+router.post('/login', adminLoginLimiter, adminController.login);
 router.get('/documents/:accountType/:id/cnic/:side', adminController.getSignedCnicDocument);
 
 // Protect review and operations routes
 router.use(authMiddleware, isAdmin);
+
+router.post('/refresh', adminController.refreshToken);
 
 router.use('/physical-shop', physicalShopRoutes);
 
