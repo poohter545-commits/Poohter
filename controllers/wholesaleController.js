@@ -788,6 +788,14 @@ const getWholesaleCatalogForGuest = async (req, res, next) => {
   }
 };
 
+const getWholesalePaymentAccount = (req, res) => {
+  res.json({
+    method: process.env.WHOLESALE_PAYMENT_METHOD || '',
+    accountNumber: process.env.WHOLESALE_PAYMENT_ACCOUNT_NUMBER || '',
+    accountHolder: process.env.WHOLESALE_PAYMENT_ACCOUNT_HOLDER || '',
+  });
+};
+
 const createWholesaleOrderForSeller = async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -1590,6 +1598,7 @@ module.exports = {
   getWholesalerPayouts,
   getWholesaleCatalogForSeller,
   getWholesaleCatalogForGuest,
+  getWholesalePaymentAccount,
   createWholesaleOrderForSeller,
   getSellerWholesaleOrders,
   getAdminWholesaleProducts,

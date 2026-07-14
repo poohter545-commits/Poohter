@@ -156,6 +156,7 @@ router.post('/login', sellerController.login);       // Publicly accessible logi
 router.post('/refresh-token', sellerController.refreshSellerToken);
 // Guest browsing: no auth, prices stripped server-side (see getWholesaleCatalogForGuest).
 router.get('/wholesale/guest-products', wholesaleController.getWholesaleCatalogForGuest);
+router.get('/wholesale/payment-account', wholesaleController.getWholesalePaymentAccount);
 
 // Protected Seller Routes
 router.post('/logout', authMiddleware, isSeller, sellerController.logoutSeller);
