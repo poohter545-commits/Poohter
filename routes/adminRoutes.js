@@ -95,6 +95,11 @@ router.post('/wholesalers/:id/cnic-update-request', wholesaleController.requestW
 router.patch('/wholesalers/:id/cnic-update', wholesaleController.reviewWholesalerCnicUpdate);
 router.post('/wholesalers/:id/report', wholesaleController.reportWholesalerToTopTeam);
 router.get('/wholesale/products', wholesaleController.getAdminWholesaleProducts);
+router.get('/wholesale/min-order-rules', wholesaleController.getMinOrderRules);
+router.post('/wholesale/min-order-rules', wholesaleController.createMinOrderRule);
+router.patch('/wholesale/min-order-rules/:id', wholesaleController.updateMinOrderRule);
+router.delete('/wholesale/min-order-rules/:id', wholesaleController.deleteMinOrderRule);
+router.post('/wholesale/min-order-rules/apply-to-all-products', wholesaleController.applyMinOrderRulesToAllProducts);
 router.patch('/wholesalers/:id/wholesale-profit', wholesaleController.applyWholesalerExpectedProfitPercent);
 router.patch(
   '/wholesale/products/:id/images',

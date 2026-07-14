@@ -796,6 +796,115 @@ const getWholesalePaymentAccount = (req, res) => {
   });
 };
 
+const getMinOrderRules = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const result = await pool.query(
+      'SELECT * FROM wholesale_min_order_rules ORDER BY min_price ASC'
+    );
+    res.json(result.rows.map((row) => ({
+      id: numberValue(row.id),
+      min_price: numberValue(row.min_price),
+      min_order_quantity: numberValue(row.min_order_quantity),
+    })));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createMinOrderRule = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const minPrice = Number(req.body.min_price);
+    const minOrderQuantity = Number.parseInt(req.body.min_order_quantity, 10);
+    if (!Number.isFinite(minPrice) || minPrice < 0) {
+      return res.status(400).json({ error: 'Enter a valid non-negative price threshold' });
+    }
+    if (!Number.isInteger(minOrderQuantity) || minOrderQuantity < 1) {
+      return res.status(400).json({ error: 'Enter a valid minimum order quantity (1 or more)' });
+    }
+    const result = await pool.query(
+      `INSERT INTO wholesale_min_order_rules (min_price, min_order_quantity)
+       VALUES ($1, $2)
+       RETURNING *`,
+      [minPrice, minOrderQuantity]
+    );
+    res.json({
+      id: numberValue(result.rows[0].id),
+      min_price: numberValue(result.rows[0].min_price),
+      min_order_quantity: numberValue(result.rows[0].min_order_quantity),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateMinOrderRule = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const minPrice = Number(req.body.min_price);
+    const minOrderQuantity = Number.parseInt(req.body.min_order_quantity, 10);
+    if (!Number.isFinite(minPrice) || minPrice < 0) {
+      return res.status(400).json({ error: 'Enter a valid non-negative price threshold' });
+    }
+    if (!Number.isInteger(minOrderQuantity) || minOrderQuantity < 1) {
+      return res.status(400).json({ error: 'Enter a valid minimum order quantity (1 or more)' });
+    }
+    const result = await pool.query(
+      `UPDATE wholesale_min_order_rules
+       SET min_price = $1, min_order_quantity = $2, updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [minPrice, minOrderQuantity, req.params.id]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json({
+      id: numberValue(result.rows[0].id),
+      min_price: numberValue(result.rows[0].min_price),
+      min_order_quantity: numberValue(result.rows[0].min_order_quantity),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteMinOrderRule = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    await pool.query('DELETE FROM wholesale_min_order_rules WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Recomputes min_order_quantity for every wholesale product priced for
+// sellers (final_price set), using the current min-order rules against each
+// product's final (seller-facing) price.
+const applyMinOrderRulesToAllProducts = async (req, res, next) => {
+  try {
+    await ensureWholesaleTables(pool);
+    const result = await pool.query(`
+      UPDATE wholesale_products wp
+      SET min_order_quantity = matched.min_order_quantity,
+          updated_at = NOW()
+      FROM (
+        SELECT DISTINCT ON (wp2.id) wp2.id, r.min_order_quantity
+        FROM wholesale_products wp2
+        JOIN wholesale_min_order_rules r ON r.min_price <= wp2.final_price
+        WHERE COALESCE(wp2.final_price, 0) > 0
+        ORDER BY wp2.id, r.min_price DESC
+      ) matched
+      WHERE wp.id = matched.id
+        AND wp.min_order_quantity IS DISTINCT FROM matched.min_order_quantity
+      RETURNING wp.id
+    `);
+    res.json({ updated: result.rowCount });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const createWholesaleOrderForSeller = async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -1599,6 +1708,11 @@ module.exports = {
   getWholesaleCatalogForSeller,
   getWholesaleCatalogForGuest,
   getWholesalePaymentAccount,
+  getMinOrderRules,
+  createMinOrderRule,
+  updateMinOrderRule,
+  deleteMinOrderRule,
+  applyMinOrderRulesToAllProducts,
   createWholesaleOrderForSeller,
   getSellerWholesaleOrders,
   getAdminWholesaleProducts,

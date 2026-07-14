@@ -11,7 +11,7 @@ const {
   ensureSalesPlatformsTable,
   getSalesPlatforms,
 } = require('../utils/salesPlatforms');
-const { ensureWholesaleTables } = require('../utils/wholesaleFlow');
+const { ensureWholesaleTables, resolveMinOrderQuantityForPrice } = require('../utils/wholesaleFlow');
 const {
   DEFAULT_DELIVERY_CHARGE,
   DEFAULT_PACKING_MATERIAL_COST,
@@ -1399,6 +1399,7 @@ const approveWholesaleProductPricing = async (req, res, next) => {
     }
 
     const finalPrice = basePrice + extraCost;
+    const minOrderQuantity = await resolveMinOrderQuantityForPrice(client, finalPrice, product.min_order_quantity);
     const result = await client.query(
       `UPDATE wholesale_products
        SET base_price = $1,
@@ -1408,10 +1409,11 @@ const approveWholesaleProductPricing = async (req, res, next) => {
            status = 'active',
            priced_by_top_team_id = $4,
            priced_at = NOW(),
+           min_order_quantity = $6,
            updated_at = NOW()
        WHERE id = $5
        RETURNING *`,
-      [basePrice, extraCost, finalPrice, req.user?.email || req.user?.id || 'topteam', product.id]
+      [basePrice, extraCost, finalPrice, req.user?.email || req.user?.id || 'topteam', product.id, minOrderQuantity]
     );
 
     await client.query('COMMIT');
