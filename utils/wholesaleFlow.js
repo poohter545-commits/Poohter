@@ -358,10 +358,11 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
     )
   `);
 
-  // Admin-configured rules: "if final price >= min_price, minimum order is
-  // min_order_quantity". The highest-threshold rule that the price qualifies
-  // for wins. Applied automatically whenever Top Team sets a product's final
-  // price (see approveWholesaleProductPricing).
+  // Admin-configured rules: "if final price <= min_price, minimum order is
+  // min_order_quantity". The lowest threshold the price still qualifies
+  // for (i.e. the closest bound from above) wins. Applied automatically
+  // whenever Top Team sets a product's final price (see
+  // approveWholesaleProductPricing).
   await clientOrPool.query(`
     CREATE TABLE IF NOT EXISTS wholesale_min_order_rules (
       id SERIAL PRIMARY KEY,
@@ -377,8 +378,8 @@ const runWholesaleTableEnsure = async (clientOrPool) => {
 const resolveMinOrderQuantityForPrice = async (clientOrPool, price, fallback = 1) => {
   const result = await clientOrPool.query(
     `SELECT min_order_quantity FROM wholesale_min_order_rules
-     WHERE min_price <= $1
-     ORDER BY min_price DESC
+     WHERE min_price >= $1
+     ORDER BY min_price ASC
      LIMIT 1`,
     [numberValue(price)]
   );

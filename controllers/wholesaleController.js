@@ -891,9 +891,9 @@ const applyMinOrderRulesToAllProducts = async (req, res, next) => {
       FROM (
         SELECT DISTINCT ON (wp2.id) wp2.id, r.min_order_quantity
         FROM wholesale_products wp2
-        JOIN wholesale_min_order_rules r ON r.min_price <= wp2.final_price
+        JOIN wholesale_min_order_rules r ON r.min_price >= wp2.final_price
         WHERE COALESCE(wp2.final_price, 0) > 0
-        ORDER BY wp2.id, r.min_price DESC
+        ORDER BY wp2.id, r.min_price ASC
       ) matched
       WHERE wp.id = matched.id
         AND wp.min_order_quantity IS DISTINCT FROM matched.min_order_quantity
